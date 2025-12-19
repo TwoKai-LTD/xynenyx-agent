@@ -1,2 +1,1 @@
-# Tests for Xynenyx Agent Service
-
+"""Test suite for Xynenyx Agent Service."""
