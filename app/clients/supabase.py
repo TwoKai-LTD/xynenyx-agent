@@ -164,6 +164,7 @@ class SupabaseClient:
     async def get_messages(
         self,
         conversation_id: str,
+        user_id: Optional[str] = None,
         limit: int = 100,
     ) -> List[Dict[str, Any]]:
         """
@@ -171,19 +172,26 @@ class SupabaseClient:
 
         Args:
             conversation_id: Conversation ID
+            user_id: Optional user ID for ownership verification
             limit: Maximum number of messages to return
 
         Returns:
             List of message dicts
         """
-        result = (
+        query = (
             self.client.table("messages")
             .select("*")
             .eq("conversation_id", conversation_id)
-            .order("created_at", desc=False)
-            .limit(limit)
-            .execute()
         )
+        
+        # If user_id provided, verify conversation ownership via join
+        if user_id:
+            # Verify conversation belongs to user (RLS should handle this, but double-check)
+            conv = await self.get_conversation(conversation_id, user_id)
+            if not conv:
+                return []
+        
+        result = query.order("created_at", desc=False).limit(limit).execute()
         return result.data if result.data else []
 
     async def update_conversation_title(
