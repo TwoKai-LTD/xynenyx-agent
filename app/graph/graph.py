@@ -88,7 +88,12 @@ def build_agent_graph(checkpointer: SupabaseCheckpointer | None = None):
         """Route from execute_tools, checking for errors first."""
         if state.get("error"):
             return "handle_error"
-        return should_generate_response(state)
+        result = should_generate_response(state)
+        # Ensure result is in the mapping
+        if result not in ["generate_response", "handle_error"]:
+            logger.warning(f"Unexpected route from execute_tools: {result}, defaulting to generate_response")
+            return "generate_response"
+        return result
     
     graph.add_conditional_edges(
         "execute_tools",
