@@ -1,6 +1,6 @@
 """Configuration settings for Xynenyx Agent Service."""
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import model_validator
+from pydantic import model_validator, field_validator
 
 
 class Settings(BaseSettings):
