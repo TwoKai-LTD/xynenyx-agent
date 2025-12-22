@@ -3,7 +3,7 @@ import logging
 import json
 import uuid
 from typing import AsyncGenerator
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Header
 from fastapi.responses import StreamingResponse
 from app.schemas.requests import ChatRequest
 from app.schemas.responses import ChatResponse, StreamChunk
@@ -18,7 +18,10 @@ supabase_client = SupabaseClient()
 
 
 @router.post("", response_model=ChatResponse)
-async def chat(request: ChatRequest) -> ChatResponse:
+async def chat(
+    request: ChatRequest,
+    user_id: str = Header(..., alias="X-User-ID"),
+) -> ChatResponse:
     """
     Handle a synchronous chat request.
 
@@ -29,28 +32,49 @@ async def chat(request: ChatRequest) -> ChatResponse:
         Chat response with message, sources, tools_used, usage
     """
     try:
-        # Verify conversation exists and belongs to user
-        conversation = await supabase_client.get_conversation(
-            request.conversation_id,
-            request.user_id,
-        )
-        if not conversation:
-            raise HTTPException(status_code=404, detail="Conversation not found")
+        # Create conversation if not provided
+        conversation_id = request.conversation_id
+        if not conversation_id:
+            # Create new conversation
+            conversation = await supabase_client.create_conversation(
+                user_id=user_id,
+                title=request.message[:50] if len(request.message) > 50 else request.message,
+            )
+            conversation_id = conversation["id"]
+        else:
+            # Verify conversation exists and belongs to user
+            conversation = await supabase_client.get_conversation(
+                conversation_id,
+                user_id,
+            )
+            if not conversation:
+                raise HTTPException(status_code=404, detail="Conversation not found")
 
         # Load conversation history
-        messages_data = await supabase_client.get_messages(request.conversation_id)
-        messages = [
-            {"role": msg["role"], "content": msg["content"]}
-            for msg in messages_data
-        ]
+        messages_data = await supabase_client.get_messages(conversation_id, user_id=user_id)
+        messages = []
+        for msg in messages_data:
+            # Convert database message format to LangChain message format
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if role == "user":
+                from langchain_core.messages import HumanMessage
+                messages.append(HumanMessage(content=content))
+            elif role == "assistant":
+                from langchain_core.messages import AIMessage
+                messages.append(AIMessage(content=content))
+            elif role == "system":
+                from langchain_core.messages import SystemMessage
+                messages.append(SystemMessage(content=content))
 
-        # Add user message
-        user_message = {"role": "user", "content": request.message}
+        # Add user message as LangChain HumanMessage
+        from langchain_core.messages import HumanMessage
+        user_message = HumanMessage(content=request.message)
         messages.append(user_message)
 
         # Save user message
         await supabase_client.save_message(
-            conversation_id=request.conversation_id,
+            conversation_id=conversation_id,
             role="user",
             content=request.message,
         )
@@ -58,8 +82,8 @@ async def chat(request: ChatRequest) -> ChatResponse:
         # Initialize state
         initial_state: AgentState = {
             "messages": messages,
-            "user_id": request.user_id,
-            "conversation_id": request.conversation_id,
+            "user_id": user_id,
+            "conversation_id": conversation_id,
             "intent": None,
             "context": [],
             "tools_used": [],
@@ -71,13 +95,14 @@ async def chat(request: ChatRequest) -> ChatResponse:
 
         # Run graph
         graph = get_agent_graph()
-        config = {"configurable": {"thread_id": request.conversation_id}}
+        config = {"configurable": {"thread_id": conversation_id}}
         final_state = await graph.ainvoke(initial_state, config=config)
 
-        # Get assistant message
+        # Get assistant message from LangChain messages
+        from langchain_core.messages import AIMessage
         assistant_messages = [
             msg for msg in final_state["messages"]
-            if msg.get("role") == "assistant"
+            if isinstance(msg, AIMessage)
         ]
         if not assistant_messages:
             raise HTTPException(status_code=500, detail="No response generated")
@@ -85,20 +110,26 @@ async def chat(request: ChatRequest) -> ChatResponse:
         assistant_message = assistant_messages[-1]
 
         # Save assistant message
+        assistant_content = assistant_message.content if hasattr(assistant_message, 'content') else str(assistant_message)
         await supabase_client.save_message(
-            conversation_id=request.conversation_id,
+            conversation_id=conversation_id,
             role="assistant",
-            content=assistant_message.get("content", ""),
+            content=assistant_content,
             sources=final_state.get("sources", []),
             metadata={"tools_used": final_state.get("tools_used", [])},
         )
 
+        # Ensure usage is a dict, not None
+        usage = final_state.get("usage")
+        if usage is None:
+            usage = {}
+        
         return ChatResponse(
-            message=assistant_message.get("content", ""),
-            conversation_id=request.conversation_id,
+            message=assistant_content,
+            conversation_id=conversation_id,
             sources=final_state.get("sources", []),
             tools_used=final_state.get("tools_used", []),
-            usage=final_state.get("usage", {}),
+            usage=usage,
         )
     except HTTPException:
         raise
@@ -108,41 +139,66 @@ async def chat(request: ChatRequest) -> ChatResponse:
 
 
 @router.post("/stream")
-async def chat_stream(request: ChatRequest) -> StreamingResponse:
+async def chat_stream(
+    request: ChatRequest,
+    user_id: str = Header(..., alias="X-User-ID"),
+) -> StreamingResponse:
     """
     Handle a streaming chat request (SSE).
 
     Args:
-        request: Chat request with message, conversation_id, user_id, stream=True
+        request: Chat request with message, conversation_id, stream=True
+        user_id: User ID from X-User-ID header
 
     Returns:
         StreamingResponse with SSE chunks
     """
     async def generate() -> AsyncGenerator[str, None]:
         try:
-            # Verify conversation exists and belongs to user
-            conversation = await supabase_client.get_conversation(
-                request.conversation_id,
-                request.user_id,
-            )
-            if not conversation:
-                yield f"data: {json.dumps({'type': 'error', 'content': 'Conversation not found'})}\n\n"
-                return
+            # Create conversation if not provided
+            conversation_id = request.conversation_id
+            if not conversation_id:
+                # Create new conversation
+                conversation = await supabase_client.create_conversation(
+                    user_id=user_id,
+                    title=request.message[:50] if len(request.message) > 50 else request.message,
+                )
+                conversation_id = conversation["id"]
+            else:
+                # Verify conversation exists and belongs to user
+                conversation = await supabase_client.get_conversation(
+                    conversation_id,
+                    user_id,
+                )
+                if not conversation:
+                    yield f"data: {json.dumps({'type': 'error', 'content': 'Conversation not found'})}\n\n"
+                    return
 
             # Load conversation history
-            messages_data = await supabase_client.get_messages(request.conversation_id)
-            messages = [
-                {"role": msg["role"], "content": msg["content"]}
-                for msg in messages_data
-            ]
+            messages_data = await supabase_client.get_messages(conversation_id, user_id=user_id)
+            messages = []
+            for msg in messages_data:
+                # Convert database message format to LangChain message format
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                if role == "user":
+                    from langchain_core.messages import HumanMessage
+                    messages.append(HumanMessage(content=content))
+                elif role == "assistant":
+                    from langchain_core.messages import AIMessage
+                    messages.append(AIMessage(content=content))
+                elif role == "system":
+                    from langchain_core.messages import SystemMessage
+                    messages.append(SystemMessage(content=content))
 
-            # Add user message
-            user_message = {"role": "user", "content": request.message}
+            # Add user message as LangChain HumanMessage
+            from langchain_core.messages import HumanMessage
+            user_message = HumanMessage(content=request.message)
             messages.append(user_message)
 
             # Save user message
             await supabase_client.save_message(
-                conversation_id=request.conversation_id,
+                conversation_id=conversation_id,
                 role="user",
                 content=request.message,
             )
@@ -150,8 +206,8 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
             # Initialize state
             initial_state: AgentState = {
                 "messages": messages,
-                "user_id": request.user_id,
-                "conversation_id": request.conversation_id,
+                "user_id": user_id,
+                "conversation_id": conversation_id,
                 "intent": None,
                 "context": [],
                 "tools_used": [],
@@ -163,22 +219,23 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
 
             # Run graph with streaming
             graph = get_agent_graph()
-            config = {"configurable": {"thread_id": request.conversation_id}}
+            config = {"configurable": {"thread_id": conversation_id}}
 
             # Stream tokens from LLM during generation
             # Note: This is a simplified version - in production, you'd stream from generate_response node
             final_state = await graph.ainvoke(initial_state, config=config)
 
-            # Get assistant message
+            # Get assistant message from LangChain messages
+            from langchain_core.messages import AIMessage
             assistant_messages = [
                 msg for msg in final_state["messages"]
-                if msg.get("role") == "assistant"
+                if isinstance(msg, AIMessage)
             ]
             if not assistant_messages:
                 yield f"data: {json.dumps({'type': 'error', 'content': 'No response generated'})}\n\n"
                 return
 
-            assistant_content = assistant_messages[-1].get("content", "")
+            assistant_content = assistant_messages[-1].content if hasattr(assistant_messages[-1], 'content') else str(assistant_messages[-1])
 
             # Stream tokens (simplified - in production, stream during generation)
             for char in assistant_content:
@@ -196,7 +253,7 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
 
             # Save assistant message
             await supabase_client.save_message(
-                conversation_id=request.conversation_id,
+                conversation_id=conversation_id,
                 role="assistant",
                 content=assistant_content,
                 sources=final_state.get("sources", []),
