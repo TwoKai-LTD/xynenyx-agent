@@ -3,12 +3,17 @@ FROM python:3.11-slim AS builder
 
 WORKDIR /build
 
-# Copy requirements file
-COPY requirements.txt ./
+# Install Poetry
+RUN pip install --no-cache-dir poetry==1.7.1
+
+# Copy Poetry files
+COPY pyproject.toml poetry.lock* ./
+
+# Configure Poetry to not create virtualenv
+RUN poetry config virtualenvs.create false
 
 # Install dependencies
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+RUN poetry install --no-interaction --no-ansi --only=main
 
 # Final stage
 FROM python:3.11-slim
