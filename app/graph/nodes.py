@@ -288,6 +288,10 @@ async def handle_error(state: AgentState) -> AgentState:
     error = state.get("error", "An unknown error occurred")
     logger.error(f"Handling error: {error}")
 
+    # Ensure usage is always a dict, not None
+    if state.get("usage") is None:
+        state["usage"] = {}
+
     # Generate user-friendly error message as LangChain AIMessage
     from langchain_core.messages import AIMessage
     error_message = AIMessage(
