@@ -23,13 +23,14 @@ async def classify_intent(state: AgentState) -> AgentState:
         Updated state with intent set
     """
     try:
-        # Get the latest user message
-        user_messages = [msg for msg in state["messages"] if msg.get("role") == "user"]
+        # Get the latest user message (LangChain HumanMessage)
+        from langchain_core.messages import HumanMessage
+        user_messages = [msg for msg in state["messages"] if isinstance(msg, HumanMessage)]
         if not user_messages:
             state["intent"] = "research_query"
             return state
 
-        latest_message = user_messages[-1].get("content", "")
+        latest_message = user_messages[-1].content if hasattr(user_messages[-1], 'content') else str(user_messages[-1])
         intent = await _llm_client.classify_intent(
             message=latest_message,
             user_id=state.get("user_id"),
@@ -54,12 +55,13 @@ async def retrieve_context(state: AgentState) -> AgentState:
         Updated state with context and sources
     """
     try:
-        # Get the latest user message
-        user_messages = [msg for msg in state["messages"] if msg.get("role") == "user"]
+        # Get the latest user message (LangChain HumanMessage)
+        from langchain_core.messages import HumanMessage
+        user_messages = [msg for msg in state["messages"] if isinstance(msg, HumanMessage)]
         if not user_messages:
             return state
 
-        query = user_messages[-1].get("content", "")
+        query = user_messages[-1].content if hasattr(user_messages[-1], 'content') else str(user_messages[-1])
 
         # Extract filters from intent if applicable
         date_filter = None
@@ -124,11 +126,12 @@ async def execute_tools(state: AgentState) -> AgentState:
     """
     try:
         intent = state.get("intent")
-        user_messages = [msg for msg in state["messages"] if msg.get("role") == "user"]
+        from langchain_core.messages import HumanMessage
+        user_messages = [msg for msg in state["messages"] if isinstance(msg, HumanMessage)]
         if not user_messages:
             return state
 
-        query = user_messages[-1].get("content", "")
+        query = user_messages[-1].content if hasattr(user_messages[-1], 'content') else str(user_messages[-1])
         tools_used = state.get("tools_used", [])
 
         if intent == "comparison":
@@ -200,12 +203,26 @@ async def generate_response(state: AgentState) -> AgentState:
 
         messages.append({"role": "system", "content": system_prompt})
 
-        # Add conversation history
+        # Add conversation history (convert LangChain messages to dict format for LLM client)
         for msg in state.get("messages", []):
-            messages.append({
-                "role": msg.get("role"),
-                "content": msg.get("content"),
-            })
+            from langchain_core.messages import BaseMessage
+            if isinstance(msg, BaseMessage):
+                # Convert LangChain message to dict
+                role_map = {
+                    "HumanMessage": "user",
+                    "AIMessage": "assistant",
+                    "SystemMessage": "system",
+                }
+                msg_type = type(msg).__name__
+                role = role_map.get(msg_type, "user")
+                content = msg.content if hasattr(msg, 'content') else str(msg)
+                messages.append({"role": role, "content": content})
+            else:
+                # Already a dict
+                messages.append({
+                    "role": msg.get("role", "user"),
+                    "content": msg.get("content", ""),
+                })
 
         # Add context to the last user message or as a separate system message
         context = state.get("context", [])
@@ -232,15 +249,16 @@ async def generate_response(state: AgentState) -> AgentState:
             conversation_id=state.get("conversation_id"),
         )
 
-        # Add assistant message to state
-        assistant_message = {
-            "role": "assistant",
-            "content": response.get("content", ""),
-        }
+        # Add assistant message to state as LangChain AIMessage
+        from langchain_core.messages import AIMessage
+        assistant_message = AIMessage(content=response.get("content", ""))
         state["messages"].append(assistant_message)
 
-        # Store usage information
-        state["usage"] = response.get("usage", {})
+        # Store usage information (ensure it's always a dict)
+        usage = response.get("usage")
+        if usage is None or not isinstance(usage, dict):
+            usage = {}
+        state["usage"] = usage
 
         # Store sources for citations
         if not state.get("sources"):
@@ -251,6 +269,9 @@ async def generate_response(state: AgentState) -> AgentState:
     except Exception as e:
         logger.error(f"Response generation failed: {e}")
         state["error"] = f"Failed to generate response: {str(e)}"
+        # Ensure usage is always a dict, not None
+        if state.get("usage") is None:
+            state["usage"] = {}
         return state
 
 
@@ -267,11 +288,11 @@ async def handle_error(state: AgentState) -> AgentState:
     error = state.get("error", "An unknown error occurred")
     logger.error(f"Handling error: {error}")
 
-    # Generate user-friendly error message
-    error_message = {
-        "role": "assistant",
-        "content": f"I apologize, but I encountered an error while processing your request: {error}. Please try rephrasing your question or try again later.",
-    }
+    # Generate user-friendly error message as LangChain AIMessage
+    from langchain_core.messages import AIMessage
+    error_message = AIMessage(
+        content=f"I apologize, but I encountered an error while processing your request: {error}. Please try rephrasing your question or try again later."
+    )
     state["messages"].append(error_message)
 
     # Clear error after handling
