@@ -7,8 +7,7 @@ class ChatRequest(BaseModel):
     """Request for a chat completion."""
 
     message: str = Field(..., description="User message")
-    conversation_id: str = Field(..., description="Conversation identifier")
-    user_id: str = Field(..., description="User identifier")
+    conversation_id: str | None = Field(None, description="Conversation identifier (optional, will create new if not provided)")
     stream: bool = Field(default=False, description="Enable streaming response")
 
 

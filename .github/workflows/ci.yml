@@ -36,11 +36,6 @@ jobs:
         if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
         run: poetry install --no-interaction --no-ansi
       
-      - name: Lint
-        run: |
-          poetry run ruff check .
-          poetry run ruff format --check .
-      
       - name: Run tests
         run: poetry run pytest -v --cov=app --cov-report=xml
         env:

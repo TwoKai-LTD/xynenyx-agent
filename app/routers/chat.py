@@ -91,6 +91,9 @@ async def chat(
             "error": None,
             "sources": [],
             "usage": None,
+            "reasoning": None,
+            "validation": None,
+            "validation_retried": False,
         }
 
         # Run graph

@@ -1,12 +1,14 @@
 """LangGraph state definition."""
-from typing import TypedDict, List, Dict, Any, Optional
+from typing import TypedDict, List, Dict, Any, Optional, Annotated
+from langchain_core.messages import BaseMessage
+from langgraph.graph.message import add_messages
 
 
 class AgentState(TypedDict):
     """State for the agent graph."""
 
-    messages: List[Dict[str, Any]]
-    """Conversation history as list of message dicts with 'role' and 'content'."""
+    messages: Annotated[List[BaseMessage], add_messages]
+    """Conversation history as LangChain BaseMessage objects."""
 
     user_id: str
     """User identifier."""
@@ -34,4 +36,13 @@ class AgentState(TypedDict):
 
     usage: Optional[Dict[str, int]]
     """Token usage information from LLM calls."""
+
+    reasoning: Optional[str]
+    """Chain-of-thought reasoning for complex queries."""
+
+    validation: Optional[Dict[str, Any]]
+    """Response validation results."""
+
+    validation_retried: bool
+    """Whether response has been regenerated due to validation issues."""
 

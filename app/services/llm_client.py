@@ -25,6 +25,7 @@ class LLMServiceClient:
         provider: Optional[str] = None,
         model: Optional[str] = None,
         temperature: Optional[float] = None,
+        response_format: Optional[Dict[str, str]] = None,
         user_id: Optional[str] = None,
         conversation_id: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -58,6 +59,8 @@ class LLMServiceClient:
             "model": model or self.default_model,
             "temperature": temperature if temperature is not None else self.default_temperature,
         }
+        if response_format:
+            payload["response_format"] = response_format
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             try:

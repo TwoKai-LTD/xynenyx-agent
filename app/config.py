@@ -28,6 +28,18 @@ class Settings(BaseSettings):
     llm_default_provider: str = "openai"
     llm_default_model: str = "gpt-4o-mini"
     llm_default_temperature: float = 0.7
+    
+    # Adaptive temperature settings per intent
+    # Lower temperature = more deterministic, higher = more creative
+    intent_temperature_mapping: dict[str, float] = {
+        "intent_classification": 0.1,  # Very deterministic for classification
+        "research_query": 0.3,  # Low temperature for factual queries
+        "entity_research": 0.3,  # Low temperature for factual queries
+        "temporal_query": 0.3,  # Low temperature for factual queries
+        "comparison": 0.4,  # Slightly higher for structured comparisons
+        "trend_analysis": 0.7,  # Higher temperature for creative analysis
+        "out_of_scope": 0.5,  # Moderate for polite redirections
+    }
 
     # RAG Service settings
     rag_service_url: str = "http://localhost:8002"

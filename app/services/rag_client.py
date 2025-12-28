@@ -29,6 +29,8 @@ class RAGServiceClient:
         investor_filter: Optional[List[str]] = None,
         sector_filter: Optional[List[str]] = None,
         use_hybrid_search: Optional[bool] = None,
+        use_multi_query: Optional[bool] = None,
+        query_variations: Optional[List[str]] = None,
         use_reranking: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
@@ -60,6 +62,13 @@ class RAGServiceClient:
             "use_hybrid_search": use_hybrid_search if use_hybrid_search is not None else self.use_hybrid_search,
             "use_reranking": use_reranking if use_reranking is not None else self.use_reranking,
         }
+        
+        # Enable multi-query if query variations are provided
+        if query_variations and len(query_variations) > 1:
+            payload["use_multi_query"] = True
+            payload["query_variations"] = query_variations
+        elif use_multi_query is not None:
+            payload["use_multi_query"] = use_multi_query
 
         if date_filter:
             payload["date_filter"] = date_filter

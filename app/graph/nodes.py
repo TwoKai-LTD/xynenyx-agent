@@ -1,15 +1,22 @@
 """LangGraph node functions."""
+
 import logging
 from typing import Dict, Any
 from app.graph.state import AgentState
 from app.services.llm_client import LLMServiceClient
 from app.services.rag_client import RAGServiceClient
+from app.services.query_rewriter import QueryRewriter
+from app.services.context_compressor import ContextCompressor
+from app.services.query_decomposer import QueryDecomposer
 from app.tools import rag_search, compare_entities, analyze_trends
 
 logger = logging.getLogger(__name__)
 
 _llm_client = LLMServiceClient()
 _rag_client = RAGServiceClient()
+_query_rewriter = QueryRewriter()
+_context_compressor = ContextCompressor()
+_query_decomposer = QueryDecomposer()
 
 
 async def classify_intent(state: AgentState) -> AgentState:
@@ -25,12 +32,19 @@ async def classify_intent(state: AgentState) -> AgentState:
     try:
         # Get the latest user message (LangChain HumanMessage)
         from langchain_core.messages import HumanMessage
-        user_messages = [msg for msg in state["messages"] if isinstance(msg, HumanMessage)]
+
+        user_messages = [
+            msg for msg in state["messages"] if isinstance(msg, HumanMessage)
+        ]
         if not user_messages:
             state["intent"] = "research_query"
             return state
 
-        latest_message = user_messages[-1].content if hasattr(user_messages[-1], 'content') else str(user_messages[-1])
+        latest_message = (
+            user_messages[-1].content
+            if hasattr(user_messages[-1], "content")
+            else str(user_messages[-1])
+        )
         intent = await _llm_client.classify_intent(
             message=latest_message,
             user_id=state.get("user_id"),
@@ -57,11 +71,18 @@ async def retrieve_context(state: AgentState) -> AgentState:
     try:
         # Get the latest user message (LangChain HumanMessage)
         from langchain_core.messages import HumanMessage
-        user_messages = [msg for msg in state["messages"] if isinstance(msg, HumanMessage)]
+
+        user_messages = [
+            msg for msg in state["messages"] if isinstance(msg, HumanMessage)
+        ]
         if not user_messages:
             return state
 
-        query = user_messages[-1].content if hasattr(user_messages[-1], 'content') else str(user_messages[-1])
+        query = (
+            user_messages[-1].content
+            if hasattr(user_messages[-1], "content")
+            else str(user_messages[-1])
+        )
 
         # Extract filters from intent if applicable
         date_filter = None
@@ -81,29 +102,108 @@ async def retrieve_context(state: AgentState) -> AgentState:
             elif "this year" in query.lower():
                 date_filter = "this_year"
 
-        # Query RAG service
-        response = await _rag_client.query(
-            query=query,
-            user_id=state.get("user_id"),
-            date_filter=date_filter,
-            company_filter=company_filter,
-            investor_filter=investor_filter,
-            sector_filter=sector_filter,
-        )
+        # Check if query is multi-part and decompose if needed
+        intent = state.get("intent", "research_query")
+        if _query_decomposer.is_multi_part(query):
+            logger.info("Detected multi-part query, decomposing...")
+            sub_queries = await _query_decomposer.decompose_query(
+                query=query,
+                user_id=state.get("user_id"),
+            )
 
-        # Store results in context
-        results = response.get("results", [])
+            # Retrieve for each sub-query
+            sub_query_results = []
+            for sub_query_data in sub_queries:
+                sub_query = sub_query_data.get("query", query)
+                sub_intent = sub_query_data.get("type", intent)
+
+                # Generate query variations for sub-query
+                query_variations = await _query_rewriter.rewrite_query(
+                    query=sub_query,
+                    intent=sub_intent,
+                    user_id=state.get("user_id"),
+                )
+
+                # Retrieve for sub-query
+                sub_response = await _rag_client.query(
+                    query=sub_query,
+                    user_id=state.get("user_id"),
+                    date_filter=date_filter,
+                    company_filter=company_filter,
+                    investor_filter=investor_filter,
+                    sector_filter=sector_filter,
+                    use_multi_query=len(query_variations) > 1,
+                    query_variations=(
+                        query_variations if len(query_variations) > 1 else None
+                    ),
+                )
+
+                sub_query_results.append(
+                    {
+                        "results": sub_response.get("results", []),
+                        "sources": [
+                            {
+                                "content": r.get("content", ""),
+                                "metadata": r.get("metadata", {}),
+                                "document_id": r.get("document_id", ""),
+                                "chunk_id": r.get("chunk_id", ""),
+                            }
+                            for r in sub_response.get("results", [])
+                        ],
+                        "count": len(sub_response.get("results", [])),
+                    }
+                )
+
+            # Merge results from all sub-queries
+            merged = _query_decomposer.merge_results(sub_query_results, query)
+            results = merged["results"]
+            sources = merged["sources"]
+
+            logger.info(
+                f"Decomposed query into {len(sub_queries)} sub-queries, merged {len(results)} results"
+            )
+        else:
+            # Single query - use standard retrieval with query rewriting
+            query_variations = await _query_rewriter.rewrite_query(
+                query=query,
+                intent=intent,
+                user_id=state.get("user_id"),
+            )
+            logger.info(
+                f"Generated {len(query_variations)} query variations: {query_variations}"
+            )
+
+            # Use multi-query retrieval if we have variations
+            use_multi_query = len(query_variations) > 1
+
+            # Query RAG service with multi-query support
+            response = await _rag_client.query(
+                query=query,
+                user_id=state.get("user_id"),
+                date_filter=date_filter,
+                company_filter=company_filter,
+                investor_filter=investor_filter,
+                sector_filter=sector_filter,
+                use_multi_query=use_multi_query,
+                query_variations=query_variations if use_multi_query else None,
+            )
+
+            # Store results in context
+            results = response.get("results", [])
+
+            # Extract sources for citations
+            sources = []
+            for result in results:
+                sources.append(
+                    {
+                        "content": result.get("content", ""),
+                        "metadata": result.get("metadata", {}),
+                        "document_id": result.get("document_id", ""),
+                        "chunk_id": result.get("chunk_id", ""),
+                    }
+                )
+
         state["context"] = results
-
-        # Extract sources for citations
-        sources = []
-        for result in results:
-            sources.append({
-                "content": result.get("content", ""),
-                "metadata": result.get("metadata", {}),
-                "document_id": result.get("document_id", ""),
-                "chunk_id": result.get("chunk_id", ""),
-            })
         state["sources"] = sources
 
         logger.info(f"Retrieved {len(results)} context documents")
@@ -127,11 +227,18 @@ async def execute_tools(state: AgentState) -> AgentState:
     try:
         intent = state.get("intent")
         from langchain_core.messages import HumanMessage
-        user_messages = [msg for msg in state["messages"] if isinstance(msg, HumanMessage)]
+
+        user_messages = [
+            msg for msg in state["messages"] if isinstance(msg, HumanMessage)
+        ]
         if not user_messages:
             return state
 
-        query = user_messages[-1].content if hasattr(user_messages[-1], 'content') else str(user_messages[-1])
+        query = (
+            user_messages[-1].content
+            if hasattr(user_messages[-1], "content")
+            else str(user_messages[-1])
+        )
         tools_used = state.get("tools_used", [])
 
         if intent == "comparison":
@@ -139,29 +246,35 @@ async def execute_tools(state: AgentState) -> AgentState:
             # Extract entity names from query (simplified)
             # In production, use NER or LLM to extract entities
             entities = []  # Placeholder - would extract from query
-            result = await compare_entities.ainvoke({
-                "entities": entities,
-                "query_context": query,
-            })
+            result = await compare_entities.ainvoke(
+                {
+                    "entities": entities,
+                    "query_context": query,
+                }
+            )
             state["context"] = [{"tool": "compare_entities", "result": result}]
             tools_used.append("compare_entities")
 
         elif intent == "trend_analysis":
             # Use trend tool
-            result = await analyze_trends.ainvoke({
-                "query": query,
-                "time_period": None,  # Could extract from query
-                "sector_filter": None,
-            })
+            result = await analyze_trends.ainvoke(
+                {
+                    "query": query,
+                    "time_period": None,  # Could extract from query
+                    "sector_filter": None,
+                }
+            )
             state["context"] = [{"tool": "analyze_trends", "result": result}]
             tools_used.append("analyze_trends")
 
         elif intent in ["research_query", "temporal_query", "entity_research"]:
             # Use RAG tool
-            result = await rag_search.ainvoke({
-                "query": query,
-                "top_k": 10,
-            })
+            result = await rag_search.ainvoke(
+                {
+                    "query": query,
+                    "top_k": 10,
+                }
+            )
             state["context"] = [{"tool": "rag_search", "result": result}]
             tools_used.append("rag_search")
 
@@ -171,6 +284,117 @@ async def execute_tools(state: AgentState) -> AgentState:
     except Exception as e:
         logger.error(f"Tool execution failed: {e}")
         state["error"] = f"Tool execution failed: {str(e)}"
+        return state
+
+
+async def reasoning_step(state: AgentState) -> AgentState:
+    """
+    Perform chain-of-thought reasoning for complex queries.
+
+    Args:
+        state: Current agent state
+
+    Returns:
+        Updated state with reasoning added
+    """
+    try:
+        intent = state.get("intent", "research_query")
+
+        # Only use CoT for complex queries
+        complex_intents = ["trend_analysis", "comparison"]
+        if intent not in complex_intents:
+            # Skip reasoning for simple queries
+            return state
+
+        # Get the latest user message
+        from langchain_core.messages import HumanMessage
+
+        user_messages = [
+            msg for msg in state["messages"] if isinstance(msg, HumanMessage)
+        ]
+        if not user_messages:
+            return state
+
+        query = (
+            user_messages[-1].content
+            if hasattr(user_messages[-1], "content")
+            else str(user_messages[-1])
+        )
+
+        # Format context for reasoning
+        context = state.get("context", [])
+        context_text = ""
+        if context:
+            if isinstance(context, list) and len(context) > 0:
+                if isinstance(context[0], dict) and "tool" in context[0]:
+                    context_text = context[0].get("result", "")
+                else:
+                    # RAG results
+                    for i, item in enumerate(context[:5], 1):
+                        content = (
+                            item.get("content", "")
+                            if isinstance(item, dict)
+                            else str(item)
+                        )
+                        metadata = (
+                            item.get("metadata", {}) if isinstance(item, dict) else {}
+                        )
+                        doc_name = metadata.get(
+                            "document_name", metadata.get("title", "")
+                        )
+                        context_text += f"[{i}] {doc_name}: {content[:200]}...\n"
+
+        # Build reasoning prompt
+        messages = [
+            {
+                "role": "system",
+                "content": """ROLE: You are a reasoning assistant that helps break down complex questions into step-by-step thinking.
+
+TASK: Analyze the user's question and the provided context, then think through how to answer it step by step.
+
+THINKING PROCESS:
+1. What specific information is the user asking for?
+2. What data points do I need to extract from the context?
+3. How should I structure the answer?
+4. What patterns or insights should I highlight?
+
+OUTPUT FORMAT:
+Provide your reasoning in this format:
+
+Reasoning:
+1. Question Analysis: [What the user is asking]
+2. Required Data: [What information to extract from context]
+3. Answer Structure: [How to organize the response]
+4. Key Insights: [What patterns or insights to highlight]
+
+Answer: [Your final answer based on the reasoning above]""",
+            },
+            {
+                "role": "user",
+                "content": f"Question: {query}\n\nContext:\n{context_text}\n\nThink step by step and provide your reasoning, then give the final answer.",
+            },
+        ]
+
+        # Use moderate temperature for reasoning
+        from app.config import settings
+
+        reasoning_response = await _llm_client.complete(
+            messages=messages,
+            temperature=0.5,  # Moderate temperature for reasoning
+            user_id=state.get("user_id"),
+            conversation_id=state.get("conversation_id"),
+        )
+
+        reasoning_content = reasoning_response.get("content", "")
+
+        # Store reasoning in state for use in generate_response
+        state["reasoning"] = reasoning_content
+        logger.info("Generated chain-of-thought reasoning")
+
+        return state
+    except Exception as e:
+        logger.error(f"Reasoning step failed: {e}", exc_info=True)
+        # Don't fail the whole pipeline if reasoning fails
         return state
 
 
@@ -188,36 +412,91 @@ async def generate_response(state: AgentState) -> AgentState:
         # Build messages for LLM
         messages = []
 
+        # Add reasoning to context if available
+        reasoning = state.get("reasoning")
+        if reasoning:
+            # Prepend reasoning to system prompt for better context
+            reasoning_summary = (
+                reasoning[:500] + "..." if len(reasoning) > 500 else reasoning
+            )
+            logger.info(f"Using reasoning in response generation: {reasoning_summary}")
+
         # Add system prompt based on intent
         intent = state.get("intent", "research_query")
         if intent == "comparison":
-            system_prompt = """You are a helpful assistant that compares companies, funding rounds, and trends.
-            Use the provided comparison data to create a clear, structured comparison."""
+            system_prompt = """ROLE: You are Xynenyx, an AI research assistant that compares companies, funding rounds, and trends in the startup/VC space.
+
+TASK: Compare entities by extracting structured data from the provided context and presenting it in a clear, organized format.
+
+CONTEXT FORMAT:
+Each source includes article title, URL, date, sectors, companies, funding amounts, investors, and other relevant metadata.
+
+OUTPUT FORMAT:
+- Extract structured data: funding amounts, rounds, dates, investors, valuations, milestones
+- Present in tables or structured lists for easy comparison
+- Always cite sources with [Source: URL, Date]
+- Highlight key differences and similarities
+- Include specific numbers and dates from context
+
+IMPORTANT: The context below contains real data from recent articles. Use this data to create a clear, structured comparison."""
         elif intent == "trend_analysis":
-            system_prompt = """You are a helpful assistant that analyzes trends in the startup and VC space.
-            Use the provided trend data to identify patterns and insights.
-            
-            IMPORTANT: The context below contains real data from recent articles. Use this data to answer the question.
-            If the context contains funding amounts, company names, dates, or other specific information, include it in your response.
-            Do not say there is no data if the context below contains relevant information."""
+            system_prompt = """ROLE: You are Xynenyx, an AI research assistant that analyzes trends and patterns in the startup and venture capital space.
+
+TASK: Analyze trends by identifying patterns, themes, and quantitative insights from the provided context.
+
+CONTEXT FORMAT:
+Each source includes article title, URL, date, sectors, companies, funding amounts, and other relevant metadata.
+
+OUTPUT FORMAT:
+- Identify patterns and themes across the data
+- Provide quantitative insights (totals, averages, percentages, growth rates)
+- Break down by sectors, funding rounds, geography, and time periods
+- Use structured sections with clear headings
+- Always cite sources with [Source: URL, Date]
+- Include specific numbers and calculations from context
+
+IMPORTANT: The context below contains real data from recent articles. Use this data to identify patterns and insights. If the context contains funding amounts, company names, dates, or other specific information, include it in your response. Do not say there is no data if the context below contains relevant information."""
         else:
-            system_prompt = """You are Xynenyx, an AI research assistant specialized in startup and venture capital intelligence.
+            system_prompt = """ROLE: You are Xynenyx, an AI research assistant specialized in startup and venture capital intelligence.
 
-IMPORTANT: The context provided below contains real information from recent startup/VC articles. You MUST use this context to answer the user's question.
+TASK: Answer questions using provided context from recent startup/VC articles. Extract specific information including funding amounts, company names, dates, sectors, and investors.
 
-Guidelines:
-1. ALWAYS use the provided context to answer questions - do not say there is no data if context is provided
-2. Extract specific information from the context: funding amounts, company names, dates, sectors, investors
-3. Cite sources when available (document URLs, publication dates)
-4. Be precise with numbers (funding amounts, dates, valuations)
-5. If the context doesn't contain relevant information, say so clearly
-6. Be concise, accurate, and helpful"""
+CONTEXT FORMAT:
+Each source includes:
+- Article title
+- URL (for citation)
+- Publication date
+- Sectors (if available)
+- Companies mentioned (if available)
+- Funding amounts (if available)
+
+OUTPUT FORMAT:
+- Start with a direct answer to the question
+- Use bullet points for multiple items or comparisons
+- Always cite sources with [Source: URL, Date] format
+- Include specific numbers (funding amounts, dates, valuations)
+- If context doesn't contain relevant information, clearly state this
+- Be concise but thorough
+
+IMPORTANT: The context provided below contains real information from recent startup/VC articles. You MUST use this context to answer the user's question. ALWAYS use the provided context to answer questions - do not say there is no data if context is provided."""
+
+        # Add reasoning if available
+        if reasoning:
+            system_prompt += f"\n\nREASONING FROM PREVIOUS STEP:\n{reasoning}\n\nUse this reasoning to guide your answer, but ensure you cite sources from the context below."
 
         messages.append({"role": "system", "content": system_prompt})
+
+        # Select adaptive temperature based on intent
+        from app.config import settings
+
+        intent_temperatures = settings.intent_temperature_mapping
+        temperature = intent_temperatures.get(intent, settings.llm_default_temperature)
+        logger.info(f"Using temperature {temperature} for intent: {intent}")
 
         # Add conversation history (convert LangChain messages to dict format for LLM client)
         for msg in state.get("messages", []):
             from langchain_core.messages import BaseMessage
+
             if isinstance(msg, BaseMessage):
                 # Convert LangChain message to dict
                 role_map = {
@@ -227,17 +506,42 @@ Guidelines:
                 }
                 msg_type = type(msg).__name__
                 role = role_map.get(msg_type, "user")
-                content = msg.content if hasattr(msg, 'content') else str(msg)
+                content = msg.content if hasattr(msg, "content") else str(msg)
                 messages.append({"role": role, "content": content})
             else:
                 # Already a dict
-                messages.append({
-                    "role": msg.get("role", "user"),
-                    "content": msg.get("content", ""),
-                })
+                messages.append(
+                    {
+                        "role": msg.get("role", "user"),
+                        "content": msg.get("content", ""),
+                    }
+                )
 
         # Add context to the last user message or as a separate system message
         context = state.get("context", [])
+
+        # Compress context if too long
+        if context:
+            # Get user query for compression
+            from langchain_core.messages import HumanMessage
+
+            user_messages = [
+                msg
+                for msg in state.get("messages", [])
+                if isinstance(msg, HumanMessage)
+            ]
+            user_query = (
+                user_messages[-1].content
+                if user_messages and hasattr(user_messages[-1], "content")
+                else ""
+            )
+
+            context = await _context_compressor.compress_context(
+                context=context,
+                query=user_query,
+                user_id=state.get("user_id", "agent-service"),
+            )
+
         if context:
             context_text = "=== CONTEXT FROM KNOWLEDGE BASE ===\n\n"
             if isinstance(context, list) and len(context) > 0:
@@ -247,17 +551,29 @@ Guidelines:
                 else:
                     # RAG results - format clearly
                     for i, item in enumerate(context[:5], 1):  # Limit to top 5
-                        content = item.get("content", "") if isinstance(item, dict) else str(item)
-                        metadata = item.get("metadata", {}) if isinstance(item, dict) else {}
-                        
+                        content = (
+                            item.get("content", "")
+                            if isinstance(item, dict)
+                            else str(item)
+                        )
+                        metadata = (
+                            item.get("metadata", {}) if isinstance(item, dict) else {}
+                        )
+
                         # Extract key information from metadata
-                        doc_name = metadata.get("document_name", metadata.get("title", ""))
+                        doc_name = metadata.get(
+                            "document_name", metadata.get("title", "")
+                        )
                         doc_url = metadata.get("url", metadata.get("source_url", ""))
-                        published_date = metadata.get("published_date", metadata.get("date", ""))
+                        published_date = metadata.get(
+                            "published_date", metadata.get("date", "")
+                        )
                         sectors = metadata.get("sectors", [])
                         companies = metadata.get("companies", [])
-                        funding_amount = metadata.get("funding_amount", metadata.get("amount", ""))
-                        
+                        funding_amount = metadata.get(
+                            "funding_amount", metadata.get("amount", "")
+                        )
+
                         context_text += f"--- Source {i} ---\n"
                         if doc_name:
                             context_text += f"Article: {doc_name}\n"
@@ -272,24 +588,26 @@ Guidelines:
                         if funding_amount:
                             context_text += f"Funding: {funding_amount}\n"
                         context_text += f"Content: {content}\n\n"
-            
+
             if len(context) > 5:
                 context_text += f"\n[Note: Showing top 5 of {len(context)} results]\n"
-            
+
             context_text += "\n=== END CONTEXT ===\n\n"
             context_text += "Use the information above to answer the user's question. Extract specific details like funding amounts, company names, dates, and sectors from the context."
-            
+
             messages.append({"role": "system", "content": context_text})
 
-        # Generate response
+        # Generate response with adaptive temperature
         response = await _llm_client.complete(
             messages=messages,
+            temperature=temperature,
             user_id=state.get("user_id"),
             conversation_id=state.get("conversation_id"),
         )
 
         # Add assistant message to state as LangChain AIMessage
         from langchain_core.messages import AIMessage
+
         assistant_message = AIMessage(content=response.get("content", ""))
         state["messages"].append(assistant_message)
 
@@ -314,6 +632,161 @@ Guidelines:
         return state
 
 
+async def validate_response(state: AgentState) -> AgentState:
+    """
+    Validate the generated response for accuracy and citations.
+
+    Args:
+        state: Current agent state
+
+    Returns:
+        Updated state with validation results
+    """
+    try:
+        # Get the assistant message
+        from langchain_core.messages import AIMessage
+
+        assistant_messages = [
+            msg for msg in state["messages"] if isinstance(msg, AIMessage)
+        ]
+        if not assistant_messages:
+            return state
+
+        assistant_message = assistant_messages[-1]
+        response_content = (
+            assistant_message.content
+            if hasattr(assistant_message, "content")
+            else str(assistant_message)
+        )
+
+        # Get context for validation
+        context = state.get("context", [])
+        sources = state.get("sources", [])
+
+        # Build validation prompt
+        context_summary = ""
+        if context:
+            for i, item in enumerate(context[:3], 1):
+                content = (
+                    item.get("content", "") if isinstance(item, dict) else str(item)
+                )
+                context_summary += f"[{i}] {content[:150]}...\n"
+
+        sources_summary = ""
+        if sources:
+            for i, source in enumerate(sources[:3], 1):
+                doc_name = source.get("metadata", {}).get("document_name", "Unknown")
+                sources_summary += f"[{i}] {doc_name}\n"
+
+        messages = [
+            {
+                "role": "system",
+                "content": """ROLE: You are a response validation assistant for a startup/VC research system.
+
+TASK: Validate that the generated response correctly uses the provided context and sources.
+
+CHECK FOR:
+1. Citations: Does the response cite sources when using information from context?
+2. Accuracy: Do numbers, dates, and facts match what's in the context?
+3. Hallucinations: Is the response making up information not in the context?
+4. Completeness: Does the response use available context or say "no data" when context exists?
+
+OUTPUT FORMAT:
+Return a JSON object:
+{
+  "is_valid": true/false,
+  "issues": ["Issue 1", "Issue 2"] or [],
+  "missing_citations": ["Fact 1 that needs citation", "Fact 2 that needs citation"] or [],
+  "hallucinations": ["Made-up fact 1", "Made-up fact 2"] or [],
+  "corrections_needed": true/false
+}""",
+            },
+            {
+                "role": "user",
+                "content": f"""Generated Response:
+{response_content}
+
+Available Context:
+{context_summary}
+
+Available Sources:
+{sources_summary}
+
+Validate the response. Check if it correctly uses the context, cites sources, and doesn't hallucinate information.""",
+            },
+        ]
+
+        # Use low temperature for validation
+        validation_response = await _llm_client.complete(
+            messages=messages,
+            temperature=0.2,
+            response_format={"type": "json_object"},
+            user_id=state.get("user_id"),
+            conversation_id=state.get("conversation_id"),
+        )
+
+        import json
+
+        validation_result = json.loads(validation_response.get("content", "{}"))
+
+        is_valid = validation_result.get("is_valid", True)
+        issues = validation_result.get("issues", [])
+        corrections_needed = validation_result.get("corrections_needed", False)
+
+        state["validation"] = validation_result
+
+        # If corrections are needed and we haven't retried yet, regenerate
+        if corrections_needed and not state.get("validation_retried", False):
+            logger.warning(
+                f"Response validation found issues: {issues}. Regenerating..."
+            )
+            state["validation_retried"] = True
+            state["validation_issues"] = issues
+
+            # Regenerate with corrections
+            correction_prompt = f"""The previous response had these issues:
+{chr(10).join(f"- {issue}" for issue in issues)}
+
+Please regenerate the response addressing these issues. Ensure you:
+1. Cite sources for all facts using [Source: URL, Date] format
+2. Only use information from the provided context
+3. Don't say "no data" if context is provided
+4. Match numbers and dates exactly from the context"""
+
+            # Add correction instruction to the last user message
+            from langchain_core.messages import HumanMessage
+
+            user_messages = [
+                msg for msg in state["messages"] if isinstance(msg, HumanMessage)
+            ]
+            if user_messages:
+                original_query = (
+                    user_messages[-1].content
+                    if hasattr(user_messages[-1], "content")
+                    else str(user_messages[-1])
+                )
+                # Create a new message with correction instruction
+                corrected_query = f"{original_query}\n\n{correction_prompt}"
+                state["messages"].append(HumanMessage(content=corrected_query))
+
+            # Remove the previous assistant message
+            if assistant_messages:
+                state["messages"] = [
+                    msg for msg in state["messages"] if not isinstance(msg, AIMessage)
+                ]
+
+            # Regenerate (will go back to generate_response)
+            return state
+
+        logger.info(f"Response validation: valid={is_valid}, issues={len(issues)}")
+        return state
+
+    except Exception as e:
+        logger.error(f"Response validation failed: {e}", exc_info=True)
+        # Don't fail the whole pipeline if validation fails
+        return state
+
+
 async def handle_error(state: AgentState) -> AgentState:
     """
     Handle errors and generate user-friendly error message.
@@ -333,6 +806,7 @@ async def handle_error(state: AgentState) -> AgentState:
 
     # Generate user-friendly error message as LangChain AIMessage
     from langchain_core.messages import AIMessage
+
     error_message = AIMessage(
         content=f"I apologize, but I encountered an error while processing your request: {error}. Please try rephrasing your question or try again later."
     )
@@ -341,4 +815,3 @@ async def handle_error(state: AgentState) -> AgentState:
     # Clear error after handling
     state["error"] = None
     return state
-

@@ -50,6 +50,24 @@ def should_use_trend_tool(state: AgentState) -> str:
     return "generate_response"
 
 
+def should_use_reasoning(state: AgentState) -> str:
+    """
+    Determine if chain-of-thought reasoning is needed.
+
+    Args:
+        state: Current agent state
+
+    Returns:
+        "reasoning_step" if reasoning needed, "generate_response" otherwise
+    """
+    intent = state.get("intent")
+    # Use reasoning for complex queries
+    complex_intents = ["trend_analysis", "comparison"]
+    if intent in complex_intents:
+        return "reasoning_step"
+    return "generate_response"
+
+
 def should_generate_response(state: AgentState) -> str:
     """
     Determine if response should be generated.
@@ -70,14 +88,32 @@ def should_generate_response(state: AgentState) -> str:
 def should_handle_error(state: AgentState) -> str:
     """
     Determine if error handling is needed.
+    This is used as a conditional edge function from nodes that might error.
 
     Args:
         state: Current agent state
 
     Returns:
-        "handle_error" if error exists, "END" otherwise
+        "handle_error" if error exists, otherwise the appropriate next node
     """
     if state.get("error"):
         return "handle_error"
+    
+    # No error - determine next step based on which node we're coming from
+    # This is context-dependent, so we check what's available in state
+    
+    # If coming from retrieve_context: always go to generate_response
+    if state.get("context") is not None:
+        return "generate_response"
+    
+    # If coming from execute_tools: go to generate_response if we have results
+    if state.get("tools_used"):
+        return "generate_response"
+    
+    # If coming from generate_response: go to END
+    if state.get("messages") and any(msg.get("role") == "assistant" for msg in state.get("messages", [])):
+        return "END"
+    
+    # Default fallback
     return "END"
 
