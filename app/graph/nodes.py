@@ -195,11 +195,23 @@ async def generate_response(state: AgentState) -> AgentState:
             Use the provided comparison data to create a clear, structured comparison."""
         elif intent == "trend_analysis":
             system_prompt = """You are a helpful assistant that analyzes trends in the startup and VC space.
-            Use the provided trend data to identify patterns and insights."""
+            Use the provided trend data to identify patterns and insights.
+            
+            IMPORTANT: The context below contains real data from recent articles. Use this data to answer the question.
+            If the context contains funding amounts, company names, dates, or other specific information, include it in your response.
+            Do not say there is no data if the context below contains relevant information."""
         else:
-            system_prompt = """You are a helpful assistant for startup and venture capital research.
-            Answer questions using the provided context and cite sources when available.
-            Be concise, accurate, and helpful."""
+            system_prompt = """You are Xynenyx, an AI research assistant specialized in startup and venture capital intelligence.
+
+IMPORTANT: The context provided below contains real information from recent startup/VC articles. You MUST use this context to answer the user's question.
+
+Guidelines:
+1. ALWAYS use the provided context to answer questions - do not say there is no data if context is provided
+2. Extract specific information from the context: funding amounts, company names, dates, sectors, investors
+3. Cite sources when available (document URLs, publication dates)
+4. Be precise with numbers (funding amounts, dates, valuations)
+5. If the context doesn't contain relevant information, say so clearly
+6. Be concise, accurate, and helpful"""
 
         messages.append({"role": "system", "content": system_prompt})
 
@@ -227,19 +239,46 @@ async def generate_response(state: AgentState) -> AgentState:
         # Add context to the last user message or as a separate system message
         context = state.get("context", [])
         if context:
-            context_text = "Context from knowledge base:\n\n"
+            context_text = "=== CONTEXT FROM KNOWLEDGE BASE ===\n\n"
             if isinstance(context, list) and len(context) > 0:
                 if isinstance(context[0], dict) and "tool" in context[0]:
                     # Tool result
                     context_text += context[0].get("result", "")
                 else:
-                    # RAG results
+                    # RAG results - format clearly
                     for i, item in enumerate(context[:5], 1):  # Limit to top 5
                         content = item.get("content", "") if isinstance(item, dict) else str(item)
                         metadata = item.get("metadata", {}) if isinstance(item, dict) else {}
-                        context_text += f"[{i}] {content}\n"
-                        if metadata:
-                            context_text += f"   Metadata: {metadata}\n\n"
+                        
+                        # Extract key information from metadata
+                        doc_name = metadata.get("document_name", metadata.get("title", ""))
+                        doc_url = metadata.get("url", metadata.get("source_url", ""))
+                        published_date = metadata.get("published_date", metadata.get("date", ""))
+                        sectors = metadata.get("sectors", [])
+                        companies = metadata.get("companies", [])
+                        funding_amount = metadata.get("funding_amount", metadata.get("amount", ""))
+                        
+                        context_text += f"--- Source {i} ---\n"
+                        if doc_name:
+                            context_text += f"Article: {doc_name}\n"
+                        if doc_url:
+                            context_text += f"URL: {doc_url}\n"
+                        if published_date:
+                            context_text += f"Date: {published_date}\n"
+                        if sectors:
+                            context_text += f"Sectors: {', '.join(sectors) if isinstance(sectors, list) else sectors}\n"
+                        if companies:
+                            context_text += f"Companies: {', '.join(companies) if isinstance(companies, list) else companies}\n"
+                        if funding_amount:
+                            context_text += f"Funding: {funding_amount}\n"
+                        context_text += f"Content: {content}\n\n"
+            
+            if len(context) > 5:
+                context_text += f"\n[Note: Showing top 5 of {len(context)} results]\n"
+            
+            context_text += "\n=== END CONTEXT ===\n\n"
+            context_text += "Use the information above to answer the user's question. Extract specific details like funding amounts, company names, dates, and sectors from the context."
+            
             messages.append({"role": "system", "content": context_text})
 
         # Generate response
