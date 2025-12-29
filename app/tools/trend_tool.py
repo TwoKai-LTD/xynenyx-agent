@@ -75,9 +75,10 @@ async def analyze_trends(
         
         # Get comparison data (previous period) for trend analysis
         comparison_data = {}
-        if date_filter_str:
-            # Get data from previous period for comparison
-            prev_period_start = date_filter - timedelta(days=30) if date_filter else None
+        if date_filter_str and date_filter:
+            # Get data from previous period for comparison (same length as current period)
+            period_days = (datetime.utcnow().date() - date_filter.date()).days if date_filter else 30
+            prev_period_start = date_filter - timedelta(days=period_days)
             if prev_period_start:
                 prev_query = _supabase_client.client.table("funding_rounds").select("id, amount_usd, round_date")
                 prev_query = prev_query.gte("round_date", prev_period_start.date().isoformat())
@@ -88,7 +89,7 @@ async def analyze_trends(
                 comparison_data = {
                     "previous_period_deals": len(prev_rounds),
                     "previous_period_funding": sum(float(r.get("amount_usd", 0) or 0) for r in prev_rounds),
-                    "previous_period_days": 30,
+                    "previous_period_days": period_days,
                 }
 
         # Get document IDs to fetch sectors
