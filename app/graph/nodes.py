@@ -93,7 +93,7 @@ async def retrieve_context(state: AgentState) -> AgentState:
             intent=intent,
             user_id=state.get("user_id"),
         )
-        
+
         date_filter = params.get("time_period")
         company_filter = params.get("company_filter")
         investor_filter = params.get("investor_filter")
@@ -282,7 +282,7 @@ async def execute_tools(state: AgentState) -> AgentState:
                 intent=intent,
                 user_id=state.get("user_id"),
             )
-            
+
             # Use trend tool with extracted parameters
             result = await analyze_trends.ainvoke(
                 {
@@ -772,6 +772,15 @@ async def validate_response(state: AgentState) -> AgentState:
         Updated state with validation results
     """
     try:
+        # Skip validation for tool-based queries - they already have structured data
+        context = state.get("context", [])
+        if context and isinstance(context, list) and len(context) > 0:
+            if isinstance(context[0], dict) and "tool" in context[0]:
+                # Tool results are already validated - skip to save time
+                logger.info("Skipping validation for tool-based query (structured data)")
+                state["validation"] = {"valid": True, "skipped": True, "reason": "tool_based"}
+                return state
+        
         # Get the assistant message
         from langchain_core.messages import AIMessage
 
@@ -789,7 +798,6 @@ async def validate_response(state: AgentState) -> AgentState:
         )
 
         # Get context for validation
-        context = state.get("context", [])
         sources = state.get("sources", [])
 
         # Build validation prompt

@@ -61,10 +61,19 @@ def should_use_reasoning(state: AgentState) -> str:
         "reasoning_step" if reasoning needed, "generate_response" otherwise
     """
     intent = state.get("intent")
-    # Use reasoning for complex queries
-    complex_intents = ["trend_analysis", "comparison"]
-    if intent in complex_intents:
+    
+    # Skip reasoning for tool-based queries - they already have structured data
+    # Only use reasoning for RAG-based queries that need complex analysis
+    if intent == "trend_analysis" or intent == "comparison":
+        # Check if we have tool results (structured data) - skip reasoning
+        context = state.get("context", [])
+        if context and isinstance(context, list) and len(context) > 0:
+            if isinstance(context[0], dict) and "tool" in context[0]:
+                # Tool results are already structured - skip reasoning for speed
+                return "generate_response"
+        # For RAG-based trend/comparison queries, use reasoning
         return "reasoning_step"
+    
     return "generate_response"
 
 
