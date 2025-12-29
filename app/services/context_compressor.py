@@ -48,7 +48,23 @@ class ContextCompressor:
         logger.info(f"Context too long ({estimated_tokens} tokens), compressing...")
 
         try:
-            # Extract key facts from each context item
+            # Batch compress items to avoid sequential LLM calls
+            # For performance, compress in parallel batches or use simpler truncation
+            if len(context) > 5:
+                # Too many items - use fast truncation instead of slow LLM compression
+                logger.info(f"Too many items ({len(context)}), using fast truncation")
+                compressed_items = []
+                for item in context[:5]:  # Keep top 5 most relevant
+                    content = str(item.get("content", ""))
+                    compressed_items.append({
+                        **item,
+                        "content": content[:500] + "..." if len(content) > 500 else content,
+                        "metadata": {**item.get("metadata", {}), "compressed": True, "compression_method": "truncation"},
+                    })
+                logger.info(f"Compressed context from {len(context)} to {len(compressed_items)} items (truncation)")
+                return compressed_items
+            
+            # For smaller contexts, use LLM compression but batch if possible
             compressed_items = []
             for item in context:
                 compressed = await self._compress_item(item, query, user_id)
@@ -60,8 +76,15 @@ class ContextCompressor:
 
         except Exception as e:
             logger.error(f"Context compression failed: {e}", exc_info=True)
-            # Fallback: return top items by relevance
-            return context[:5]
+            # Fallback: return top items by relevance with truncation
+            return [
+                {
+                    **item,
+                    "content": str(item.get("content", ""))[:500] + "...",
+                    "metadata": {**item.get("metadata", {}), "compressed": True, "compression_method": "fallback_truncation"},
+                }
+                for item in context[:5]
+            ]
 
     async def _compress_item(
         self,

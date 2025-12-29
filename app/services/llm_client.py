@@ -1,4 +1,5 @@
 """HTTP client for LLM service."""
+
 import httpx
 import json
 import logging
@@ -57,7 +58,9 @@ class LLMServiceClient:
             "messages": messages,
             "provider": provider or self.default_provider,
             "model": model or self.default_model,
-            "temperature": temperature if temperature is not None else self.default_temperature,
+            "temperature": (
+                temperature if temperature is not None else self.default_temperature
+            ),
         }
         if response_format:
             payload["response_format"] = response_format
@@ -68,11 +71,19 @@ class LLMServiceClient:
                 response.raise_for_status()
                 return response.json()
             except httpx.ConnectTimeout as e:
-                logger.error(f"LLM service connection timeout: {e}. Service may be down at {url}")
-                raise httpx.HTTPError(f"LLM service unavailable: connection timeout. Service may be down or unreachable at {self.base_url}") from e
+                logger.error(
+                    f"LLM service connection timeout: {e}. Service may be down at {url}"
+                )
+                raise httpx.HTTPError(
+                    f"LLM service unavailable: connection timeout. Service may be down or unreachable at {self.base_url}"
+                ) from e
             except httpx.ConnectError as e:
-                logger.error(f"LLM service connection error: {e}. Service may be down at {url}")
-                raise httpx.HTTPError(f"LLM service unavailable: connection failed. Service may be down or unreachable at {self.base_url}") from e
+                logger.error(
+                    f"LLM service connection error: {e}. Service may be down at {url}"
+                )
+                raise httpx.HTTPError(
+                    f"LLM service unavailable: connection failed. Service may be down or unreachable at {self.base_url}"
+                ) from e
             except httpx.HTTPError as e:
                 logger.error(f"LLM service request failed: {e}")
                 raise
@@ -114,12 +125,18 @@ class LLMServiceClient:
             "messages": messages,
             "provider": provider or self.default_provider,
             "model": model or self.default_model,
-            "temperature": temperature if temperature is not None else self.default_temperature,
+            "temperature": (
+                temperature if temperature is not None else self.default_temperature
+            ),
         }
 
-        async with httpx.AsyncClient(timeout=self.timeout * 5) as client:  # Longer timeout for streaming
+        async with httpx.AsyncClient(
+            timeout=self.timeout * 5
+        ) as client:  # Longer timeout for streaming
             try:
-                async with client.stream("POST", url, json=payload, headers=headers) as response:
+                async with client.stream(
+                    "POST", url, json=payload, headers=headers
+                ) as response:
                     response.raise_for_status()
                     async for line in response.aiter_lines():
                         if line.startswith("data: "):
@@ -159,12 +176,14 @@ class LLMServiceClient:
             {
                 "role": "system",
                 "content": """Classify the user's intent into one of:
-- research_query: User wants information about startups, funding, companies, investors
+- research_query: User wants specific information about a particular startup, company, investor, or funding round
 - comparison: User wants to compare companies, funding rounds, or trends
-- trend_analysis: User wants to understand market trends or patterns
-- temporal_query: User asks about events in a specific time period
-- entity_research: User wants information about a specific company or investor
+- trend_analysis: User wants to understand market trends, patterns, or asks about "latest", "recent", "trends", "funding rounds" (plural), or "what's happening"
+- temporal_query: User asks about events in a specific time period (e.g., "last month", "in 2024")
+- entity_research: User wants information about a specific company or investor by name
 - out_of_scope: User asks about topics outside startup/VC (redirect politely)
+
+IMPORTANT: Questions about "recent funding rounds", "latest trends", "what's happening in X sector" should be classified as trend_analysis, not research_query.
 
 Respond with only the intent name.""",
             },
@@ -194,4 +213,3 @@ Respond with only the intent name.""",
         except Exception as e:
             logger.error(f"Intent classification failed: {e}")
             return settings.intent_fallback
-
