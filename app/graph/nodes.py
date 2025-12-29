@@ -753,14 +753,8 @@ Please regenerate the response addressing these issues. Ensure you:
 3. Don't say "no data" if context is provided
 4. Match numbers and dates exactly from the context"""
 
-            # Add correction instruction to the last user message
+            # Add correction instruction as a new user message
             from langchain_core.messages import HumanMessage
-
-            # Remove the previous assistant message first
-            if assistant_messages:
-                state["messages"] = [
-                    msg for msg in state["messages"] if not isinstance(msg, AIMessage)
-                ]
 
             # Get the original user query (should be the first HumanMessage)
             user_messages = [
@@ -773,15 +767,22 @@ Please regenerate the response addressing these issues. Ensure you:
                     if hasattr(user_messages[0], "content")
                     else str(user_messages[0])
                 )
-                # Replace all user messages with just the original query + correction
-                # This prevents duplicate messages
+                # Create corrected query
                 corrected_query = f"{original_query}\n\n{correction_prompt}"
-                # Remove all existing user messages
-                state["messages"] = [
-                    msg for msg in state["messages"] if not isinstance(msg, HumanMessage)
-                ]
-                # Add the corrected query as a single new user message
-                state["messages"].append(HumanMessage(content=corrected_query))
+                
+                # Build updated messages: remove assistant messages, keep user messages and system messages
+                # Then add the correction message
+                updated_messages = []
+                for msg in state["messages"]:
+                    if not isinstance(msg, AIMessage):
+                        # Keep all non-assistant messages
+                        updated_messages.append(msg)
+                
+                # Add the corrected query as a new user message
+                updated_messages.append(HumanMessage(content=corrected_query))
+                
+                # Update state with new messages - include all required fields for LangGraph validation
+                state["messages"] = updated_messages
 
             # Regenerate (will go back to generate_response)
             return state
