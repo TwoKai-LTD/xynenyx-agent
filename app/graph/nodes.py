@@ -756,24 +756,32 @@ Please regenerate the response addressing these issues. Ensure you:
             # Add correction instruction to the last user message
             from langchain_core.messages import HumanMessage
 
-            user_messages = [
-                msg for msg in state["messages"] if isinstance(msg, HumanMessage)
-            ]
-            if user_messages:
-                original_query = (
-                    user_messages[-1].content
-                    if hasattr(user_messages[-1], "content")
-                    else str(user_messages[-1])
-                )
-                # Create a new message with correction instruction
-                corrected_query = f"{original_query}\n\n{correction_prompt}"
-                state["messages"].append(HumanMessage(content=corrected_query))
-
-            # Remove the previous assistant message
+            # Remove the previous assistant message first
             if assistant_messages:
                 state["messages"] = [
                     msg for msg in state["messages"] if not isinstance(msg, AIMessage)
                 ]
+
+            # Get the original user query (should be the first HumanMessage)
+            user_messages = [
+                msg for msg in state["messages"] if isinstance(msg, HumanMessage)
+            ]
+            if user_messages:
+                # Get the original query (first user message, not the last)
+                original_query = (
+                    user_messages[0].content
+                    if hasattr(user_messages[0], "content")
+                    else str(user_messages[0])
+                )
+                # Replace all user messages with just the original query + correction
+                # This prevents duplicate messages
+                corrected_query = f"{original_query}\n\n{correction_prompt}"
+                # Remove all existing user messages
+                state["messages"] = [
+                    msg for msg in state["messages"] if not isinstance(msg, HumanMessage)
+                ]
+                # Add the corrected query as a single new user message
+                state["messages"].append(HumanMessage(content=corrected_query))
 
             # Regenerate (will go back to generate_response)
             return state

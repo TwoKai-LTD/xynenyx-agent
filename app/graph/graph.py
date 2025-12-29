@@ -146,11 +146,12 @@ def build_agent_graph(checkpointer: SupabaseCheckpointer | None = None):
         """Route from validate_response."""
         if state.get("error"):
             return "handle_error"
-        # If corrections needed and not yet retried, go back to generate_response
-        if state.get("validation_retried") and state.get("validation", {}).get("corrections_needed"):
-            # Already retried once, don't loop
+        # If we've already retried once, don't loop again
+        if state.get("validation_retried"):
             return "END"
-        if state.get("validation", {}).get("corrections_needed") and not state.get("validation_retried"):
+        # If corrections needed and not yet retried, go back to generate_response
+        validation = state.get("validation", {})
+        if validation.get("corrections_needed"):
             return "generate_response"
         return "END"
     
