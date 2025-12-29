@@ -147,6 +147,18 @@ async def retrieve_context(state: AgentState) -> AgentState:
                                 "metadata": r.get("metadata", {}),
                                 "document_id": r.get("document_id", ""),
                                 "chunk_id": r.get("chunk_id", ""),
+                                # Explicitly include URL and date for easy citation
+                                "article_url": (
+                                    r.get("metadata", {}).get("article_url") or
+                                    r.get("metadata", {}).get("url") or
+                                    r.get("metadata", {}).get("source_url") or
+                                    ""
+                                ),
+                                "published_date": (
+                                    r.get("metadata", {}).get("published_date") or
+                                    r.get("metadata", {}).get("date") or
+                                    ""
+                                ),
                             }
                             for r in sub_response.get("results", [])
                         ],
@@ -194,12 +206,25 @@ async def retrieve_context(state: AgentState) -> AgentState:
             # Extract sources for citations
             sources = []
             for result in results:
+                metadata = result.get("metadata", {})
                 sources.append(
                     {
                         "content": result.get("content", ""),
-                        "metadata": result.get("metadata", {}),
+                        "metadata": metadata,
                         "document_id": result.get("document_id", ""),
                         "chunk_id": result.get("chunk_id", ""),
+                        # Explicitly include URL and date for easy citation
+                        "article_url": (
+                            metadata.get("article_url") or
+                            metadata.get("url") or
+                            metadata.get("source_url") or
+                            ""
+                        ),
+                        "published_date": (
+                            metadata.get("published_date") or
+                            metadata.get("date") or
+                            ""
+                        ),
                     }
                 )
 
@@ -452,10 +477,16 @@ OUTPUT FORMAT:
 - Provide quantitative insights (totals, averages, percentages, growth rates)
 - Break down by sectors, funding rounds, geography, and time periods
 - Use structured sections with clear headings
-- Always cite sources with [Source: URL, Date]
+- ALWAYS cite sources with [Source: URL, Date] for EVERY statistic, number, or fact
 - Include specific numbers and calculations from context
 
-IMPORTANT: The context below contains real data from recent articles. Use this data to identify patterns and insights. If the context contains funding amounts, company names, dates, or other specific information, include it in your response. Do not say there is no data if the context below contains relevant information."""
+CITATION REQUIREMENTS:
+- Every statistic MUST have a citation: "Total Deals: 543 [Source: https://techcrunch.com/article, 2025-12-19]"
+- Every funding amount MUST have a citation: "$1.8B raised [Source: https://techcrunch.com/article, 2025-12-19]"
+- Every company mention SHOULD have a citation if it's from a specific source
+- Citations are REQUIRED, not optional
+
+IMPORTANT: The context below contains real data from recent articles. Use this data to identify patterns and insights. If the context contains funding amounts, company names, dates, or other specific information, include it in your response WITH PROPER CITATIONS. Do not say there is no data if the context below contains relevant information."""
         else:
             system_prompt = """ROLE: You are Xynenyx, an AI research assistant specialized in startup and venture capital intelligence.
 
@@ -564,9 +595,18 @@ IMPORTANT: The context provided below contains real information from recent star
                         doc_name = metadata.get(
                             "document_name", metadata.get("title", "")
                         )
-                        doc_url = metadata.get("url", metadata.get("source_url", ""))
-                        published_date = metadata.get(
-                            "published_date", metadata.get("date", "")
+                        # Try multiple possible keys for URL
+                        doc_url = (
+                            metadata.get("article_url") or
+                            metadata.get("url") or
+                            metadata.get("source_url") or
+                            ""
+                        )
+                        # Try multiple possible keys for date
+                        published_date = (
+                            metadata.get("published_date") or
+                            metadata.get("date") or
+                            ""
                         )
                         sectors = metadata.get("sectors", [])
                         companies = metadata.get("companies", [])
@@ -593,7 +633,10 @@ IMPORTANT: The context provided below contains real information from recent star
                 context_text += f"\n[Note: Showing top 5 of {len(context)} results]\n"
 
             context_text += "\n=== END CONTEXT ===\n\n"
-            context_text += "Use the information above to answer the user's question. Extract specific details like funding amounts, company names, dates, and sectors from the context."
+            context_text += "CRITICAL CITATION REQUIREMENT: For every statistic, number, fact, or piece of information you mention in your response, you MUST include a citation in the format [Source: URL, Date]. Examples:\n"
+            context_text += "- 'Total Deals: 543 [Source: https://techcrunch.com/article, 2025-12-19]'\n"
+            context_text += "- 'AI sector raised $1.8B [Source: https://techcrunch.com/article, 2025-12-19]'\n"
+            context_text += "Use the information above to answer the user's question. Extract specific details like funding amounts, company names, dates, and sectors from the context. ALWAYS cite your sources."
 
             messages.append({"role": "system", "content": context_text})
 
