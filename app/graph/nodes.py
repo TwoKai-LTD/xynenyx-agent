@@ -149,15 +149,15 @@ async def retrieve_context(state: AgentState) -> AgentState:
                                 "chunk_id": r.get("chunk_id", ""),
                                 # Explicitly include URL and date for easy citation
                                 "article_url": (
-                                    r.get("metadata", {}).get("article_url") or
-                                    r.get("metadata", {}).get("url") or
-                                    r.get("metadata", {}).get("source_url") or
-                                    ""
+                                    r.get("metadata", {}).get("article_url")
+                                    or r.get("metadata", {}).get("url")
+                                    or r.get("metadata", {}).get("source_url")
+                                    or ""
                                 ),
                                 "published_date": (
-                                    r.get("metadata", {}).get("published_date") or
-                                    r.get("metadata", {}).get("date") or
-                                    ""
+                                    r.get("metadata", {}).get("published_date")
+                                    or r.get("metadata", {}).get("date")
+                                    or ""
                                 ),
                             }
                             for r in sub_response.get("results", [])
@@ -215,15 +215,13 @@ async def retrieve_context(state: AgentState) -> AgentState:
                         "chunk_id": result.get("chunk_id", ""),
                         # Explicitly include URL and date for easy citation
                         "article_url": (
-                            metadata.get("article_url") or
-                            metadata.get("url") or
-                            metadata.get("source_url") or
-                            ""
+                            metadata.get("article_url")
+                            or metadata.get("url")
+                            or metadata.get("source_url")
+                            or ""
                         ),
                         "published_date": (
-                            metadata.get("published_date") or
-                            metadata.get("date") or
-                            ""
+                            metadata.get("published_date") or metadata.get("date") or ""
                         ),
                     }
                 )
@@ -470,23 +468,28 @@ IMPORTANT: The context below contains real data from recent articles. Use this d
 TASK: Analyze trends by identifying patterns, themes, and quantitative insights from the provided context.
 
 CONTEXT FORMAT:
-Each source includes article title, URL, date, sectors, companies, funding amounts, and other relevant metadata.
+- If context contains "TREND ANALYSIS DATA", this is aggregated database data (no individual article sources)
+- If context contains "Source" sections, these are individual articles with URLs and dates
 
 OUTPUT FORMAT:
 - Identify patterns and themes across the data
 - Provide quantitative insights (totals, averages, percentages, growth rates)
 - Break down by sectors, funding rounds, geography, and time periods
 - Use structured sections with clear headings
-- ALWAYS cite sources with [Source: URL, Date] for EVERY statistic, number, or fact
+- Use BILLIONS for large amounts (>$1B), millions for smaller amounts
 - Include specific numbers and calculations from context
 
 CITATION REQUIREMENTS:
-- Every statistic MUST have a citation: "Total Deals: 543 [Source: https://techcrunch.com/article, 2025-12-19]"
-- Every funding amount MUST have a citation: "$1.8B raised [Source: https://techcrunch.com/article, 2025-12-19]"
-- Every company mention SHOULD have a citation if it's from a specific source
-- Citations are REQUIRED, not optional
+- For aggregated trend data (from database): Note that data is "aggregated from database" or "based on database analysis" - no specific article citations needed
+- For individual article data: ALWAYS cite with [Source: URL, Date] format
+- Example: "Total Deals: 536 (aggregated from database)" or "Company X raised $10M [Source: https://techcrunch.com/article, 2025-12-19]"
+- When using trend analysis data, you can say "Based on analysis of 536 funding rounds in the database" instead of citing individual articles
 
-IMPORTANT: The context below contains real data from recent articles. Use this data to identify patterns and insights. If the context contains funding amounts, company names, dates, or other specific information, include it in your response WITH PROPER CITATIONS. Do not say there is no data if the context below contains relevant information."""
+IMPORTANT: 
+- If context shows "TREND ANALYSIS DATA", the funding amounts are already in BILLIONS (use billions, not millions)
+- The data is aggregated from the database, so cite it as "aggregated database analysis" rather than individual articles
+- Use the exact numbers provided in the context
+- Do not say there is no data if the context contains relevant information"""
         else:
             system_prompt = """ROLE: You are Xynenyx, an AI research assistant specialized in startup and venture capital intelligence.
 
@@ -577,8 +580,44 @@ IMPORTANT: The context provided below contains real information from recent star
             context_text = "=== CONTEXT FROM KNOWLEDGE BASE ===\n\n"
             if isinstance(context, list) and len(context) > 0:
                 if isinstance(context[0], dict) and "tool" in context[0]:
-                    # Tool result
-                    context_text += context[0].get("result", "")
+                    # Tool result - format it clearly with units
+                    tool_result = context[0].get("result", "")
+                    tool_name = context[0].get("tool", "")
+                    
+                    # Parse JSON if it's a trend analysis result
+                    if tool_name == "analyze_trends" and tool_result:
+                        try:
+                            import json
+                            trends_data = json.loads(tool_result)
+                            context_text += "=== TREND ANALYSIS DATA ===\n\n"
+                            context_text += f"Total Deals: {trends_data.get('total_deals', 0)}\n"
+                            context_text += f"Total Funding: ${trends_data.get('total_funding_billions', 0)} billion (${trends_data.get('total_funding_millions', 0)} million)\n"
+                            context_text += f"Average Funding: ${trends_data.get('average_funding_billions', 0)} billion per deal\n\n"
+                            
+                            if trends_data.get("top_sectors"):
+                                context_text += "Top Sectors:\n"
+                                for sector in trends_data["top_sectors"][:10]:
+                                    context_text += f"- {sector.get('sector', 'Unknown')}: {sector.get('count', 0)} deals, ${sector.get('funding_billions', 0)}B ({sector.get('percentage', 0)}% of deals)\n"
+                                context_text += "\n"
+                            
+                            if trends_data.get("round_distribution"):
+                                context_text += "Funding Round Distribution:\n"
+                                for round_type, count in list(trends_data["round_distribution"].items())[:10]:
+                                    context_text += f"- {round_type or 'Unknown'}: {count} deals\n"
+                                context_text += "\n"
+                            
+                            if trends_data.get("date_range"):
+                                dr = trends_data["date_range"]
+                                if dr.get("earliest") or dr.get("latest"):
+                                    context_text += f"Date Range: {dr.get('earliest', 'N/A')} to {dr.get('latest', 'N/A')}\n\n"
+                            
+                            context_text += "NOTE: This data is aggregated from the database. Use billions for amounts >$1B.\n"
+                        except Exception as e:
+                            # Fallback to raw result if parsing fails
+                            context_text += tool_result
+                    else:
+                        # Other tool results - use as-is
+                        context_text += tool_result
                 else:
                     # RAG results - format clearly
                     for i, item in enumerate(context[:5], 1):  # Limit to top 5
@@ -597,16 +636,14 @@ IMPORTANT: The context provided below contains real information from recent star
                         )
                         # Try multiple possible keys for URL
                         doc_url = (
-                            metadata.get("article_url") or
-                            metadata.get("url") or
-                            metadata.get("source_url") or
-                            ""
+                            metadata.get("article_url")
+                            or metadata.get("url")
+                            or metadata.get("source_url")
+                            or ""
                         )
                         # Try multiple possible keys for date
                         published_date = (
-                            metadata.get("published_date") or
-                            metadata.get("date") or
-                            ""
+                            metadata.get("published_date") or metadata.get("date") or ""
                         )
                         sectors = metadata.get("sectors", [])
                         companies = metadata.get("companies", [])

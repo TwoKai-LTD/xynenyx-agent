@@ -195,16 +195,30 @@ async def analyze_trends(
                 "funding_millions": round(sector_funding.get(sector, 0.0) / 1_000_000, 2),
             })
 
-        # Convert funding to millions for readability
+        # Convert funding to billions for readability and clarity
+        # Store in billions to avoid confusion (LLM will interpret correctly)
         trends = {
             "total_deals": total_deals,
-            "total_funding": round(total_funding / 1_000_000, 2),  # Convert to millions
-            "average_funding": round(average_funding / 1_000_000, 2),  # Convert to millions
-            "top_sectors": top_sectors,
-            "sector_funding": {sector: round(amount / 1_000_000, 2) for sector, amount in sector_funding.items()},
+            "total_funding_billions": round(total_funding / 1_000_000_000, 2),  # Convert to billions
+            "total_funding_millions": round(total_funding / 1_000_000, 2),  # Also provide in millions for reference
+            "average_funding_billions": round(average_funding / 1_000_000_000, 2),  # Convert to billions
+            "average_funding_millions": round(average_funding / 1_000_000, 2),  # Also provide in millions
+            "top_sectors": [
+                {
+                    "sector": s["sector"],
+                    "count": s["count"],
+                    "percentage": s["percentage"],
+                    "funding_billions": round(s["funding_millions"] / 1000, 2),  # Convert to billions
+                    "funding_millions": s["funding_millions"],
+                }
+                for s in top_sectors
+            ],
+            "sector_funding_billions": {sector: round(amount / 1_000_000_000, 2) for sector, amount in sector_funding.items()},
+            "sector_funding_millions": {sector: round(amount / 1_000_000, 2) for sector, amount in sector_funding.items()},
             "geography_distribution": geography_distribution,
             "round_distribution": round_distribution,
             "date_range": date_range,
+            "note": "All funding amounts are in USD. Use billions for large amounts (>$1B) and millions for smaller amounts.",
         }
 
         return json.dumps(trends)
