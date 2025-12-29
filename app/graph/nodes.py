@@ -735,57 +735,14 @@ Validate the response. Check if it correctly uses the context, cites sources, an
 
         state["validation"] = validation_result
 
-        # If corrections are needed and we haven't retried yet, regenerate
-        if corrections_needed and not state.get("validation_retried", False):
+        # If corrections are needed, log the issues but don't regenerate to avoid state conflicts
+        # TODO: Re-enable regeneration once we fix the message duplication issue
+        if corrections_needed:
             logger.warning(
-                f"Response validation found issues: {issues}. Regenerating..."
+                f"Response validation found issues: {issues}. Validation retry disabled to prevent message duplication."
             )
-            state["validation_retried"] = True
+            # Store validation issues for potential future use, but don't regenerate
             state["validation_issues"] = issues
-
-            # Regenerate with corrections
-            correction_prompt = f"""The previous response had these issues:
-{chr(10).join(f"- {issue}" for issue in issues)}
-
-Please regenerate the response addressing these issues. Ensure you:
-1. Cite sources for all facts using [Source: URL, Date] format
-2. Only use information from the provided context
-3. Don't say "no data" if context is provided
-4. Match numbers and dates exactly from the context"""
-
-            # Add correction instruction as a new user message
-            from langchain_core.messages import HumanMessage
-
-            # Get the original user query (should be the first HumanMessage)
-            user_messages = [
-                msg for msg in state["messages"] if isinstance(msg, HumanMessage)
-            ]
-            if user_messages:
-                # Get the original query (first user message, not the last)
-                original_query = (
-                    user_messages[0].content
-                    if hasattr(user_messages[0], "content")
-                    else str(user_messages[0])
-                )
-                # Create corrected query
-                corrected_query = f"{original_query}\n\n{correction_prompt}"
-                
-                # Build updated messages: remove assistant messages, keep user messages and system messages
-                # Then add the correction message
-                updated_messages = []
-                for msg in state["messages"]:
-                    if not isinstance(msg, AIMessage):
-                        # Keep all non-assistant messages
-                        updated_messages.append(msg)
-                
-                # Add the corrected query as a new user message
-                updated_messages.append(HumanMessage(content=corrected_query))
-                
-                # Update state with new messages - include all required fields for LangGraph validation
-                state["messages"] = updated_messages
-
-            # Regenerate (will go back to generate_response)
-            return state
 
         logger.info(f"Response validation: valid={is_valid}, issues={len(issues)}")
         return state
