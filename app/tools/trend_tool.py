@@ -52,20 +52,44 @@ async def analyze_trends(
         # Parse time period
         date_filter = _parse_time_period(time_period)
         date_filter_str = date_filter.date().isoformat() if date_filter else None
+        
+        # If query mentions "latest" or "recent", default to last 30 days
+        query_lower = query.lower()
+        if not date_filter_str and ("latest" in query_lower or "recent" in query_lower or "current" in query_lower):
+            date_filter = datetime.utcnow() - timedelta(days=30)
+            date_filter_str = date_filter.date().isoformat()
 
         # Query funding rounds with filters
-        query = _supabase_client.client.table("funding_rounds").select("id, amount_usd, round_type, round_date, company_id, document_id")
+        db_query = _supabase_client.client.table("funding_rounds").select("id, amount_usd, round_type, round_date, company_id, document_id")
         
         # Apply filters
         if date_filter_str:
-            query = query.gte("round_date", date_filter_str)
+            db_query = db_query.gte("round_date", date_filter_str)
         
         # Only get rounds with funding
-        query = query.gt("amount_usd", 0)
+        db_query = db_query.gt("amount_usd", 0)
         
         # Execute query
-        result = query.execute()
+        result = db_query.execute()
         funding_rounds = result.data if result.data else []
+        
+        # Get comparison data (previous period) for trend analysis
+        comparison_data = {}
+        if date_filter_str:
+            # Get data from previous period for comparison
+            prev_period_start = date_filter - timedelta(days=30) if date_filter else None
+            if prev_period_start:
+                prev_query = _supabase_client.client.table("funding_rounds").select("id, amount_usd, round_date")
+                prev_query = prev_query.gte("round_date", prev_period_start.date().isoformat())
+                prev_query = prev_query.lt("round_date", date_filter_str)
+                prev_query = prev_query.gt("amount_usd", 0)
+                prev_result = prev_query.execute()
+                prev_rounds = prev_result.data if prev_result.data else []
+                comparison_data = {
+                    "previous_period_deals": len(prev_rounds),
+                    "previous_period_funding": sum(float(r.get("amount_usd", 0) or 0) for r in prev_rounds),
+                    "previous_period_days": 30,
+                }
 
         # Get document IDs to fetch sectors
         document_ids = list(set(r.get("document_id") for r in funding_rounds if r.get("document_id")))
@@ -195,6 +219,30 @@ async def analyze_trends(
                 "funding_millions": round(sector_funding.get(sector, 0.0) / 1_000_000, 2),
             })
 
+        # Calculate growth metrics if comparison data available
+        growth_metrics = {}
+        if comparison_data:
+            prev_deals = comparison_data.get("previous_period_deals", 0)
+            prev_funding = comparison_data.get("previous_period_funding", 0)
+            if prev_deals > 0:
+                growth_metrics = {
+                    "deals_growth_percent": round(((total_deals - prev_deals) / prev_deals * 100), 1) if prev_deals > 0 else 0,
+                    "funding_growth_percent": round(((total_funding - prev_funding) / prev_funding * 100), 1) if prev_funding > 0 else 0,
+                    "previous_period_deals": prev_deals,
+                    "previous_period_funding_billions": round(prev_funding / 1_000_000_000, 2),
+                }
+        
+        # Get recent notable deals (top 5 by amount)
+        notable_deals = []
+        if funding_rounds:
+            sorted_rounds = sorted(funding_rounds, key=lambda x: float(x.get("amount_usd", 0) or 0), reverse=True)
+            for round_data in sorted_rounds[:5]:
+                notable_deals.append({
+                    "amount_billions": round(float(round_data.get("amount_usd", 0) or 0) / 1_000_000_000, 2),
+                    "round_date": round_data.get("round_date"),
+                    "round_type": round_data.get("round_type"),
+                })
+        
         # Convert funding to billions for readability and clarity
         # Store in billions to avoid confusion (LLM will interpret correctly)
         trends = {
@@ -218,6 +266,9 @@ async def analyze_trends(
             "geography_distribution": geography_distribution,
             "round_distribution": round_distribution,
             "date_range": date_range,
+            "time_period": date_filter_str or "all_time",
+            "growth_metrics": growth_metrics if growth_metrics else None,
+            "notable_deals": notable_deals,
             "note": "All funding amounts are in USD. Use billions for large amounts (>$1B) and millions for smaller amounts.",
         }
 

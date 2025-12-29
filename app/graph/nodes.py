@@ -583,35 +583,67 @@ IMPORTANT: The context provided below contains real information from recent star
                     # Tool result - format it clearly with units
                     tool_result = context[0].get("result", "")
                     tool_name = context[0].get("tool", "")
-                    
+
                     # Parse JSON if it's a trend analysis result
                     if tool_name == "analyze_trends" and tool_result:
                         try:
                             import json
+
                             trends_data = json.loads(tool_result)
                             context_text += "=== TREND ANALYSIS DATA ===\n\n"
-                            context_text += f"Total Deals: {trends_data.get('total_deals', 0)}\n"
-                            context_text += f"Total Funding: ${trends_data.get('total_funding_billions', 0)} billion (${trends_data.get('total_funding_millions', 0)} million)\n"
+                            
+                            # Time period context
+                            time_period = trends_data.get('time_period', 'all_time')
+                            if time_period != 'all_time':
+                                context_text += f"Time Period: {time_period} (latest/recent data)\n"
+                            else:
+                                context_text += "Time Period: All available data\n"
+                            
+                            context_text += (
+                                f"Total Deals: {trends_data.get('total_deals', 0)}\n"
+                            )
+                            context_text += f"Total Funding: ${trends_data.get('total_funding_billions', 0)} billion\n"
                             context_text += f"Average Funding: ${trends_data.get('average_funding_billions', 0)} billion per deal\n\n"
                             
+                            # Growth metrics (if available)
+                            if trends_data.get("growth_metrics"):
+                                gm = trends_data["growth_metrics"]
+                                context_text += "=== GROWTH TRENDS ===\n"
+                                context_text += f"Previous Period: {gm.get('previous_period_deals', 0)} deals, ${gm.get('previous_period_funding_billions', 0)}B\n"
+                                deals_growth = gm.get('deals_growth_percent', 0)
+                                funding_growth = gm.get('funding_growth_percent', 0)
+                                context_text += f"Deals Growth: {deals_growth:+.1f}% {'(increasing)' if deals_growth > 0 else '(decreasing)' if deals_growth < 0 else '(stable)'}\n"
+                                context_text += f"Funding Growth: {funding_growth:+.1f}% {'(increasing)' if funding_growth > 0 else '(decreasing)' if funding_growth < 0 else '(stable)'}\n\n"
+                            
+                            # Notable recent deals
+                            if trends_data.get("notable_deals"):
+                                context_text += "=== NOTABLE RECENT DEALS ===\n"
+                                for deal in trends_data["notable_deals"][:5]:
+                                    context_text += f"- ${deal.get('amount_billions', 0)}B on {deal.get('round_date', 'N/A')} ({deal.get('round_type', 'Unknown')} round)\n"
+                                context_text += "\n"
+
                             if trends_data.get("top_sectors"):
                                 context_text += "Top Sectors:\n"
                                 for sector in trends_data["top_sectors"][:10]:
                                     context_text += f"- {sector.get('sector', 'Unknown')}: {sector.get('count', 0)} deals, ${sector.get('funding_billions', 0)}B ({sector.get('percentage', 0)}% of deals)\n"
                                 context_text += "\n"
-                            
+
                             if trends_data.get("round_distribution"):
                                 context_text += "Funding Round Distribution:\n"
-                                for round_type, count in list(trends_data["round_distribution"].items())[:10]:
-                                    context_text += f"- {round_type or 'Unknown'}: {count} deals\n"
+                                for round_type, count in list(
+                                    trends_data["round_distribution"].items()
+                                )[:10]:
+                                    context_text += (
+                                        f"- {round_type or 'Unknown'}: {count} deals\n"
+                                    )
                                 context_text += "\n"
-                            
+
                             if trends_data.get("date_range"):
                                 dr = trends_data["date_range"]
                                 if dr.get("earliest") or dr.get("latest"):
                                     context_text += f"Date Range: {dr.get('earliest', 'N/A')} to {dr.get('latest', 'N/A')}\n\n"
-                            
-                            context_text += "NOTE: This data is aggregated from the database. Use billions for amounts >$1B.\n"
+
+                            context_text += "NOTE: This data is aggregated from the database. Use billions for amounts >$1B. Focus on RECENT trends and changes when time_period shows recent data.\n"
                         except Exception as e:
                             # Fallback to raw result if parsing fails
                             context_text += tool_result
@@ -670,15 +702,20 @@ IMPORTANT: The context provided below contains real information from recent star
                 context_text += f"\n[Note: Showing top 5 of {len(context)} results]\n"
 
             context_text += "\n=== END CONTEXT ===\n\n"
-            
+
             # Check if this is tool data (no sources) or RAG data (has sources)
-            if isinstance(context, list) and len(context) > 0 and isinstance(context[0], dict) and "tool" in context[0]:
+            if (
+                isinstance(context, list)
+                and len(context) > 0
+                and isinstance(context[0], dict)
+                and "tool" in context[0]
+            ):
                 context_text += "NOTE: The data above is aggregated from the database. For trend analysis data, cite as 'aggregated from database analysis' rather than individual articles. Use BILLIONS for amounts >$1B.\n"
             else:
                 context_text += "CRITICAL CITATION REQUIREMENT: For every statistic, number, fact, or piece of information you mention in your response, you MUST include a citation in the format [Source: URL, Date]. Examples:\n"
                 context_text += "- 'Total Deals: 543 [Source: https://techcrunch.com/article, 2025-12-19]'\n"
                 context_text += "- 'AI sector raised $1.8B [Source: https://techcrunch.com/article, 2025-12-19]'\n"
-            
+
             context_text += "Use the information above to answer the user's question. Extract specific details like funding amounts, company names, dates, and sectors from the context."
 
             messages.append({"role": "system", "content": context_text})
