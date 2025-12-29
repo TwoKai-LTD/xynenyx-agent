@@ -733,7 +733,11 @@ Validate the response. Check if it correctly uses the context, cites sources, an
         issues = validation_result.get("issues", [])
         corrections_needed = validation_result.get("corrections_needed", False)
 
-        state["validation"] = validation_result
+        # Return only the fields we're updating, not the full state
+        # This prevents LangGraph from trying to validate/replace the entire state
+        update = {
+            "validation": validation_result,
+        }
 
         # If corrections are needed, log the issues but don't regenerate to avoid state conflicts
         # TODO: Re-enable regeneration once we fix the message duplication issue
@@ -742,10 +746,10 @@ Validate the response. Check if it correctly uses the context, cites sources, an
                 f"Response validation found issues: {issues}. Validation retry disabled to prevent message duplication."
             )
             # Store validation issues for potential future use, but don't regenerate
-            state["validation_issues"] = issues
+            update["validation_issues"] = issues
 
         logger.info(f"Response validation: valid={is_valid}, issues={len(issues)}")
-        return state
+        return update
 
     except Exception as e:
         logger.error(f"Response validation failed: {e}", exc_info=True)
