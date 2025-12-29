@@ -735,6 +735,7 @@ Validate the response. Check if it correctly uses the context, cites sources, an
 
         # Return only the fields we're updating, not the full state
         # This prevents LangGraph from trying to validate/replace the entire state
+        # Note: validation_issues is not in the state schema, so we don't store it
         update = {
             "validation": validation_result,
         }
@@ -745,8 +746,8 @@ Validate the response. Check if it correctly uses the context, cites sources, an
             logger.warning(
                 f"Response validation found issues: {issues}. Validation retry disabled to prevent message duplication."
             )
-            # Store validation issues for potential future use, but don't regenerate
-            update["validation_issues"] = issues
+            # Don't store validation_issues - it's not in the state schema
+            # The issues are already in validation_result["issues"]
 
         logger.info(f"Response validation: valid={is_valid}, issues={len(issues)}")
         return update
