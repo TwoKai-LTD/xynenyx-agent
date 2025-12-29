@@ -67,6 +67,12 @@ class LLMServiceClient:
                 response = await client.post(url, json=payload, headers=headers)
                 response.raise_for_status()
                 return response.json()
+            except httpx.ConnectTimeout as e:
+                logger.error(f"LLM service connection timeout: {e}. Service may be down at {url}")
+                raise httpx.HTTPError(f"LLM service unavailable: connection timeout. Service may be down or unreachable at {self.base_url}") from e
+            except httpx.ConnectError as e:
+                logger.error(f"LLM service connection error: {e}. Service may be down at {url}")
+                raise httpx.HTTPError(f"LLM service unavailable: connection failed. Service may be down or unreachable at {self.base_url}") from e
             except httpx.HTTPError as e:
                 logger.error(f"LLM service request failed: {e}")
                 raise
