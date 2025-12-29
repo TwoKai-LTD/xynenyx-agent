@@ -49,15 +49,9 @@ async def analyze_trends(
         JSON string with trend analysis including patterns, metrics, and insights
     """
     try:
-        # Parse time period
+        # Parse time period (now comes from structured extraction, not keyword matching)
         date_filter = _parse_time_period(time_period)
         date_filter_str = date_filter.date().isoformat() if date_filter else None
-        
-        # If query mentions "latest" or "recent", default to last 30 days
-        query_lower = query.lower()
-        if not date_filter_str and ("latest" in query_lower or "recent" in query_lower or "current" in query_lower):
-            date_filter = datetime.utcnow() - timedelta(days=30)
-            date_filter_str = date_filter.date().isoformat()
 
         # Query funding rounds with filters
         db_query = _supabase_client.client.table("funding_rounds").select("id, amount_usd, round_type, round_date, company_id, document_id")

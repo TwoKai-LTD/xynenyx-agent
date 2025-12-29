@@ -8,6 +8,7 @@ from app.services.rag_client import RAGServiceClient
 from app.services.query_rewriter import QueryRewriter
 from app.services.context_compressor import ContextCompressor
 from app.services.query_decomposer import QueryDecomposer
+from app.services.query_extractor import QueryExtractor
 from app.tools import rag_search, compare_entities, analyze_trends
 
 logger = logging.getLogger(__name__)
@@ -17,6 +18,7 @@ _rag_client = RAGServiceClient()
 _query_rewriter = QueryRewriter()
 _context_compressor = ContextCompressor()
 _query_decomposer = QueryDecomposer()
+_query_extractor = QueryExtractor()
 
 
 async def classify_intent(state: AgentState) -> AgentState:
@@ -84,23 +86,18 @@ async def retrieve_context(state: AgentState) -> AgentState:
             else str(user_messages[-1])
         )
 
-        # Extract filters from intent if applicable
-        date_filter = None
-        company_filter = None
-        investor_filter = None
-        sector_filter = None
-
-        if state.get("intent") == "temporal_query":
-            # Try to extract date information from query
-            # For now, use a simple heuristic
-            if "last week" in query.lower() or "past week" in query.lower():
-                date_filter = "last_week"
-            elif "last month" in query.lower() or "past month" in query.lower():
-                date_filter = "last_month"
-            elif "last quarter" in query.lower() or "past quarter" in query.lower():
-                date_filter = "last_quarter"
-            elif "this year" in query.lower():
-                date_filter = "this_year"
+        # Extract filters from query using structured extraction
+        intent = state.get("intent", "research_query")
+        params = await _query_extractor.extract_parameters(
+            query=query,
+            intent=intent,
+            user_id=state.get("user_id"),
+        )
+        
+        date_filter = params.get("time_period")
+        company_filter = params.get("company_filter")
+        investor_filter = params.get("investor_filter")
+        sector_filter = params.get("sector_filter")
 
         # Check if query is multi-part and decompose if needed
         intent = state.get("intent", "research_query")
@@ -279,12 +276,19 @@ async def execute_tools(state: AgentState) -> AgentState:
             tools_used.append("compare_entities")
 
         elif intent == "trend_analysis":
-            # Use trend tool
+            # Extract parameters from query using structured extraction
+            params = await _query_extractor.extract_parameters(
+                query=query,
+                intent=intent,
+                user_id=state.get("user_id"),
+            )
+            
+            # Use trend tool with extracted parameters
             result = await analyze_trends.ainvoke(
                 {
                     "query": query,
-                    "time_period": None,  # Could extract from query
-                    "sector_filter": None,
+                    "time_period": params.get("time_period"),
+                    "sector_filter": params.get("sector_filter"),
                 }
             )
             state["context"] = [{"tool": "analyze_trends", "result": result}]
@@ -591,30 +595,32 @@ IMPORTANT: The context provided below contains real information from recent star
 
                             trends_data = json.loads(tool_result)
                             context_text += "=== TREND ANALYSIS DATA ===\n\n"
-                            
+
                             # Time period context
-                            time_period = trends_data.get('time_period', 'all_time')
-                            if time_period != 'all_time':
-                                context_text += f"Time Period: {time_period} (latest/recent data)\n"
+                            time_period = trends_data.get("time_period", "all_time")
+                            if time_period != "all_time":
+                                context_text += (
+                                    f"Time Period: {time_period} (latest/recent data)\n"
+                                )
                             else:
                                 context_text += "Time Period: All available data\n"
-                            
+
                             context_text += (
                                 f"Total Deals: {trends_data.get('total_deals', 0)}\n"
                             )
                             context_text += f"Total Funding: ${trends_data.get('total_funding_billions', 0)} billion\n"
                             context_text += f"Average Funding: ${trends_data.get('average_funding_billions', 0)} billion per deal\n\n"
-                            
+
                             # Growth metrics (if available)
                             if trends_data.get("growth_metrics"):
                                 gm = trends_data["growth_metrics"]
                                 context_text += "=== GROWTH TRENDS ===\n"
                                 context_text += f"Previous Period: {gm.get('previous_period_deals', 0)} deals, ${gm.get('previous_period_funding_billions', 0)}B\n"
-                                deals_growth = gm.get('deals_growth_percent', 0)
-                                funding_growth = gm.get('funding_growth_percent', 0)
+                                deals_growth = gm.get("deals_growth_percent", 0)
+                                funding_growth = gm.get("funding_growth_percent", 0)
                                 context_text += f"Deals Growth: {deals_growth:+.1f}% {'(increasing)' if deals_growth > 0 else '(decreasing)' if deals_growth < 0 else '(stable)'}\n"
                                 context_text += f"Funding Growth: {funding_growth:+.1f}% {'(increasing)' if funding_growth > 0 else '(decreasing)' if funding_growth < 0 else '(stable)'}\n\n"
-                            
+
                             # Notable recent deals
                             if trends_data.get("notable_deals"):
                                 context_text += "=== NOTABLE RECENT DEALS ===\n"
