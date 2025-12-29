@@ -746,6 +746,9 @@ Validate the response. Check if it correctly uses the context, cites sources, an
             logger.warning(
                 f"Response validation found issues: {issues}. Validation retry disabled to prevent message duplication."
             )
+            # Set validation_retried to True to prevent routing loop
+            # Even though we're not actually retrying, we need to tell the router to go to END
+            update["validation_retried"] = True
             # Don't store validation_issues - it's not in the state schema
             # The issues are already in validation_result["issues"]
 
