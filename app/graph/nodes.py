@@ -670,10 +670,16 @@ IMPORTANT: The context provided below contains real information from recent star
                 context_text += f"\n[Note: Showing top 5 of {len(context)} results]\n"
 
             context_text += "\n=== END CONTEXT ===\n\n"
-            context_text += "CRITICAL CITATION REQUIREMENT: For every statistic, number, fact, or piece of information you mention in your response, you MUST include a citation in the format [Source: URL, Date]. Examples:\n"
-            context_text += "- 'Total Deals: 543 [Source: https://techcrunch.com/article, 2025-12-19]'\n"
-            context_text += "- 'AI sector raised $1.8B [Source: https://techcrunch.com/article, 2025-12-19]'\n"
-            context_text += "Use the information above to answer the user's question. Extract specific details like funding amounts, company names, dates, and sectors from the context. ALWAYS cite your sources."
+            
+            # Check if this is tool data (no sources) or RAG data (has sources)
+            if isinstance(context, list) and len(context) > 0 and isinstance(context[0], dict) and "tool" in context[0]:
+                context_text += "NOTE: The data above is aggregated from the database. For trend analysis data, cite as 'aggregated from database analysis' rather than individual articles. Use BILLIONS for amounts >$1B.\n"
+            else:
+                context_text += "CRITICAL CITATION REQUIREMENT: For every statistic, number, fact, or piece of information you mention in your response, you MUST include a citation in the format [Source: URL, Date]. Examples:\n"
+                context_text += "- 'Total Deals: 543 [Source: https://techcrunch.com/article, 2025-12-19]'\n"
+                context_text += "- 'AI sector raised $1.8B [Source: https://techcrunch.com/article, 2025-12-19]'\n"
+            
+            context_text += "Use the information above to answer the user's question. Extract specific details like funding amounts, company names, dates, and sectors from the context."
 
             messages.append({"role": "system", "content": context_text})
 
