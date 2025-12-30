@@ -625,13 +625,18 @@ IMPORTANT: The context provided below contains real information from recent star
                             if trends_data.get("notable_deals"):
                                 context_text += "=== NOTABLE RECENT DEALS ===\n"
                                 for deal in trends_data["notable_deals"][:5]:
-                                    context_text += f"- ${deal.get('amount_billions', 0)}B on {deal.get('round_date', 'N/A')} ({deal.get('round_type', 'Unknown')} round)\n"
+                                    company_name = deal.get('company_name')
+                                    if company_name:
+                                        context_text += f"- {company_name}: ${deal.get('amount_billions', 0)}B on {deal.get('round_date', 'N/A')} ({deal.get('round_type', 'Unknown')} round)\n"
+                                    else:
+                                        context_text += f"- ${deal.get('amount_billions', 0)}B on {deal.get('round_date', 'N/A')} ({deal.get('round_type', 'Unknown')} round) [Company name not available]\n"
                                 context_text += "\n"
 
                             if trends_data.get("top_sectors"):
                                 context_text += "Top Sectors:\n"
+                                context_text += "NOTE: Deals can be in multiple sectors, so percentages may sum to >100%. Count represents 'deals involving this sector'.\n"
                                 for sector in trends_data["top_sectors"][:10]:
-                                    context_text += f"- {sector.get('sector', 'Unknown')}: {sector.get('count', 0)} deals, ${sector.get('funding_billions', 0)}B ({sector.get('percentage', 0)}% of deals)\n"
+                                    context_text += f"- {sector.get('sector', 'Unknown')}: {sector.get('count', 0)} deals involving this sector, ${sector.get('funding_billions', 0)}B ({sector.get('percentage', 0)}% of total deals involve this sector)\n"
                                 context_text += "\n"
 
                             if trends_data.get("round_distribution"):
@@ -777,10 +782,16 @@ async def validate_response(state: AgentState) -> AgentState:
         if context and isinstance(context, list) and len(context) > 0:
             if isinstance(context[0], dict) and "tool" in context[0]:
                 # Tool results are already validated - skip to save time
-                logger.info("Skipping validation for tool-based query (structured data)")
-                state["validation"] = {"valid": True, "skipped": True, "reason": "tool_based"}
+                logger.info(
+                    "Skipping validation for tool-based query (structured data)"
+                )
+                state["validation"] = {
+                    "valid": True,
+                    "skipped": True,
+                    "reason": "tool_based",
+                }
                 return state
-        
+
         # Get the assistant message
         from langchain_core.messages import AIMessage
 

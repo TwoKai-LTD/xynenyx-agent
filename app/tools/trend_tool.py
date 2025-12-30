@@ -135,18 +135,24 @@ async def analyze_trends(
                 batch = company_ids[i:i + batch_size]
                 try:
                     # Use 'in' filter for batch query
-                    comp_result = _supabase_client.client.table("companies").select("id, metadata").in_("id", batch).execute()
+                    comp_result = _supabase_client.client.table("companies").select("id, name, metadata").in_("id", batch).execute()
                     if comp_result.data:
                         for comp in comp_result.data:
-                            companies_map[comp["id"]] = comp.get("metadata", {})
+                            companies_map[comp["id"]] = {
+                                "name": comp.get("name"),
+                                "metadata": comp.get("metadata", {}),
+                            }
                 except Exception:
                     # If batch query fails, fall back to individual queries
                     for company_id in batch:
                         try:
-                            comp_result = _supabase_client.client.table("companies").select("id, metadata").eq("id", company_id).execute()
+                            comp_result = _supabase_client.client.table("companies").select("id, name, metadata").eq("id", company_id).execute()
                             if comp_result.data:
                                 for comp in comp_result.data:
-                                    companies_map[comp["id"]] = comp.get("metadata", {})
+                                    companies_map[comp["id"]] = {
+                                        "name": comp.get("name"),
+                                        "metadata": comp.get("metadata", {}),
+                                    }
                         except Exception:
                             continue
 
@@ -185,7 +191,8 @@ async def analyze_trends(
         for round_data in funding_rounds:
             company_id = round_data.get("company_id")
             if company_id:
-                metadata = companies_map.get(company_id, {})
+                company_data = companies_map.get(company_id, {})
+                metadata = company_data.get("metadata", {}) if isinstance(company_data, dict) else {}
                 location = metadata.get("location") if isinstance(metadata, dict) else None
                 if location:
                     geography_distribution[location] = geography_distribution.get(location, 0) + 1
@@ -206,11 +213,13 @@ async def analyze_trends(
         
         top_sectors = []
         for sector, count in top_sectors_list:
+            # Note: percentage represents "deals involving this sector" not "percentage of total deals"
+            # Since deals can be in multiple sectors, percentages can sum to >100%
             percentage = (count / total_deals * 100) if total_deals > 0 else 0
             top_sectors.append({
                 "sector": sector,
-                "count": count,
-                "percentage": round(percentage, 2),
+                "count": count,  # Number of deals involving this sector
+                "percentage": round(percentage, 2),  # Percentage of deals involving this sector (can be >100% due to multi-sector deals)
                 "funding_millions": round(sector_funding.get(sector, 0.0) / 1_000_000, 2),
             })
 
@@ -232,10 +241,17 @@ async def analyze_trends(
         if funding_rounds:
             sorted_rounds = sorted(funding_rounds, key=lambda x: float(x.get("amount_usd", 0) or 0), reverse=True)
             for round_data in sorted_rounds[:5]:
+                company_id = round_data.get("company_id")
+                company_name = None
+                if company_id:
+                    company_data = companies_map.get(company_id, {})
+                    company_name = company_data.get("name") if isinstance(company_data, dict) else None
+                
                 notable_deals.append({
                     "amount_billions": round(float(round_data.get("amount_usd", 0) or 0) / 1_000_000_000, 2),
                     "round_date": round_data.get("round_date"),
                     "round_type": round_data.get("round_type"),
+                    "company_name": company_name,  # Include company name
                 })
         
         # Convert funding to billions for readability and clarity
